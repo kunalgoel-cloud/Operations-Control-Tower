@@ -15,14 +15,28 @@ import pandas as pd
 # ── AfterShip carrier resolver ─────────────────────────────────────────────
 
 _CARRIER_MAP = [
-    (["safex", "safe-x"],        "safexpress"),
-    (["blue", "dart"],           "bluedart"),
+    # Safexpress — check FIRST; many name variants in the wild
+    (["safex", "safe-x", "safe x", "safe express", "safexpress"], "safexpress"),
+    # Bluedart / Bluedart Surface / Bluedart Air
+    (["bluedart", "blue dart"],  "bluedart"),
+    # Delhivery / Delhivery B2B / Delhivery Surface
     (["delhivery"],              "delhivery"),
+    # Gati / Gati-KWE
     (["gati"],                   "gati-kwe"),
+    # Ecom Express
     (["ecom"],                   "ecom-express"),
+    # XpressBees
     (["xpressbees"],             "xpressbees"),
+    # DTDC
     (["dtdc"],                   "dtdc"),
+    # Ekart
     (["ekart"],                  "ekart"),
+    # Shadowfax
+    (["shadowfax"],              "shadowfax"),
+    # Rivigo / Rivigo Surface
+    (["rivigo"],                 "rivigo"),
+    # Smartr / SmartR Logistics
+    (["smartr"],                 "smartr-logistics"),
 ]
 _DEFAULT_CARRIER = "safexpress"
 
