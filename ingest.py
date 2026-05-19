@@ -548,7 +548,14 @@ def apply_stuck_orders_to_db(stuck_records: list[dict]) -> tuple[int, int]:
     # Use ORIGINAL case (no .lower()) so PostgREST case-sensitive match works.
     inv_records = [r for r in stuck_records if r.get("invoice_number")]
     if inv_records:
-        inv_map: dict[str, dict] = {r["invoice_number"]: r for r in inv_records}
+        # Split comma-separated invoice numbers so multi-invoice rows
+        # (e.g. "MH/26-27/0121, MH/26-27/0143") match individual AWBs.
+        inv_map: dict[str, dict] = {}
+        for r in inv_records:
+            for inv_num in r["invoice_number"].split(","):
+                inv_num = inv_num.strip()
+                if inv_num:
+                    inv_map[inv_num] = r
         inv_list = list(inv_map.keys())
 
         for i in range(0, len(inv_list), chunk):
@@ -613,11 +620,12 @@ def apply_stuck_orders_to_db(stuck_records: list[dict]) -> tuple[int, int]:
                 if not stuck:
                     continue
                 patch = {"awb": row["awb"]}
+                if stuck.get("invoice_number"):
+                    patch["invoice_number"] = stuck["invoice_number"]
                 if stuck.get("customer_po_ref"):
                     patch["customer_po_ref"] = stuck["customer_po_ref"]
                 if stuck.get("expected_ship_date"):
                     patch["expected_ship_date"] = stuck["expected_ship_date"]
-                # Don't re-write invoice_number here — already handled in Path A
                 if len(patch) > 1:
                     updates.append(patch)
 
