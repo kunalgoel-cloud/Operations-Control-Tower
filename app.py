@@ -227,8 +227,9 @@ def render_awb_table(df: pd.DataFrame, key_suffix: str = "main") -> None:
         remark = str(row.get("latest_remark") or "")
         remark_short = remark[:30] + "…" if len(remark) > 30 else remark
 
-        pod_val = str(row.get("pod_url") or "").strip()
-        pod_cell = pod_val  # plain URL — LinkColumn handles display as "📄"
+        _pod_raw = row.get("pod_url")
+        _pod_str = "" if _pod_raw is None else str(_pod_raw).strip()
+        pod_cell = _pod_str if _pod_str.startswith("http") else ""
 
         display_rows.append({
             "SO #":        row.get("so_number") or "–",
