@@ -363,22 +363,24 @@ def tab_dashboard(df: pd.DataFrame, kpi_vals: dict) -> None:
     all_statuses    = sorted(df["status"].dropna().unique()) if not df.empty else []
 
     with f_col3:
-        state_sel = st.selectbox("State", ["All"] + all_states, key="state_sel")
+        state_sel = st.multiselect("State", all_states,
+                                   default=all_states, key="state_sel")
     with f_col4:
         tp_sel = st.multiselect("Transporter", all_transporters,
                                 default=all_transporters, key="tp_sel")
     with f_col5:
-        status_sel = st.selectbox("Status", ["All"] + all_statuses, key="status_sel")
+        status_sel = st.multiselect("Status", all_statuses,
+                                    default=all_statuses, key="status_sel")
 
     # Apply filters
     filtered = df.copy() if not df.empty else pd.DataFrame()
     if not filtered.empty:
-        if state_sel != "All":
-            filtered = filtered[filtered["drop_state"] == state_sel]
+        if state_sel and set(state_sel) != set(all_states):
+            filtered = filtered[filtered["drop_state"].isin(state_sel)]
         if tp_sel:
             filtered = filtered[filtered["transporter"].isin(tp_sel)]
-        if status_sel != "All":
-            filtered = filtered[filtered["status"] == status_sel]
+        if status_sel and set(status_sel) != set(all_statuses):
+            filtered = filtered[filtered["status"].isin(status_sel)]
         if search_q.strip():
             q = search_q.strip().lower()
             col_map = {
@@ -395,7 +397,9 @@ def tab_dashboard(df: pd.DataFrame, kpi_vals: dict) -> None:
     # ── Variance by state ─────────────────────────────────────────────────
     st.markdown("### 📍 Delivery Variance by State")
     var_df = kpis.variance_by_state(
-        df[df["drop_state"] == state_sel] if state_sel != "All" else df
+        df[df["drop_state"].isin(state_sel)]
+        if (state_sel and set(state_sel) != set(all_states))
+        else df
     ) if not df.empty else pd.DataFrame()
 
     if not var_df.empty:
