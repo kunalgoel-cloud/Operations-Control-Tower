@@ -405,7 +405,7 @@ def tab_dashboard(df: pd.DataFrame, kpi_vals: dict) -> None:
                 pass
             return "color: #9AA0A6"
 
-        styled = var_df.style.applymap(colour_var, subset=["Avg Var (d)"])
+        styled = var_df.style.map(colour_var, subset=["Avg Var (d)"])
         st.dataframe(styled, use_container_width=True, hide_index=True, height=300)
     else:
         st.info("No variance data yet — upload a Courier MIS file.")
