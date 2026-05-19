@@ -168,7 +168,7 @@ def normalise_status(raw: str) -> str | None:
     if "MANIFEST" in s or "CLOSED" in s:
         return "MANIFESTED"
     if "AWB" in s or "REGISTER" in s:
-        return None   # skip AWB_REGISTERED
+        return "AWB_REGISTERED"   # tag in DB so load filter suppresses it
     return "IN_TRANSIT"
 
 
@@ -331,10 +331,13 @@ def ingest_courier_mis(df: pd.DataFrame) -> list[dict]:
             ]) or ""
         )
         norm_st = normalise_status(raw_st)
-        if norm_st is None:   # AWB_REGISTERED — skip entirely
-            continue
-
         rec: dict[str, Any] = {"awb": awb, "status": norm_st}
+
+        if norm_st == "AWB_REGISTERED":
+            # Persist the status so DB load-filter suppresses it;
+            # do NOT overwrite other fields — the WMS record is still valid.
+            records.append(rec)
+            continue
 
         if norm_st == "CANCELLED":
             records.append(rec)
@@ -525,6 +528,90 @@ def ingest_appt_config(df: pd.DataFrame) -> list[dict]:
     return records
 
 
+# ── Fuzzy fallback: WMS-AWB → MIS-AWB bridge ──────────────────────────────
+
+# Generic tokens that appear in Indian company names but don't disambiguate
+_COMPANY_SKIP = {"pvt", "ltd", "private", "limited", "llp", "inc", "corp",
+                 "co", "the", "and", "&", "of", "for"}
+
+
+def _try_fuzzy_update(
+    client: Any,
+    wms_row: dict,
+    stuck: dict,
+    updates: list[dict],
+) -> None:
+    """
+    When Path A found a WMS record by invoice_number, the WMS may have a
+    wrong/old AWB.  Use customer_name + drop_state + dispatch_date ± 5 days
+    from the WMS record to find the correct B2B MIS AWB and also update it.
+
+    Only proceeds when:
+    - customer_name, drop_state and expected_ship_date are all available
+    - Exactly ONE unmatched (invoice_number IS NULL) record matches the criteria
+    - That record's AWB is not already in the updates batch
+    """
+    cust  = (wms_row.get("customer_name") or "").strip()
+    state = (wms_row.get("drop_state") or "").strip()
+    exp_date = stuck.get("expected_ship_date")
+    wms_awb  = wms_row.get("awb") or ""
+
+    if not cust or not state or not exp_date:
+        return
+
+    # Pick first substantive word from customer name
+    first_word = ""
+    for token in re.split(r"[\s\-_/]+", cust):
+        if token and token.lower() not in _COMPANY_SKIP and len(token) >= 3:
+            first_word = token.upper()
+            break
+    if not first_word:
+        return
+
+    try:
+        exp_ts   = pd.Timestamp(exp_date)
+        date_lo  = (exp_ts - pd.Timedelta(days=5)).strftime("%Y-%m-%d")
+        date_hi  = (exp_ts + pd.Timedelta(days=5)).strftime("%Y-%m-%d")
+    except Exception:
+        return
+
+    try:
+        resp = (
+            client.table("awb_view")
+            .select("awb")
+            .ilike("customer_name", f"%{first_word}%")
+            .eq("drop_state", state)
+            .gte("dispatch_date", date_lo)
+            .lte("dispatch_date", date_hi)
+            .is_("invoice_number", "null")   # only un-matched MIS records
+            .neq("awb", wms_awb)             # exclude the WMS record itself
+            .execute()
+        )
+    except Exception:
+        return
+
+    candidates = resp.data or []
+    if len(candidates) != 1:
+        return  # ambiguous or no match — skip
+
+    mis_awb = candidates[0]["awb"]
+    # Skip if this AWB already has an update queued in this batch
+    if any(u.get("awb") == mis_awb for u in updates):
+        return
+
+    patch: dict[str, Any] = {"awb": mis_awb}
+    if stuck.get("invoice_number"):
+        patch["invoice_number"] = stuck["invoice_number"]
+    if stuck.get("so_number"):
+        patch["so_number"] = stuck["so_number"]
+    if stuck.get("customer_po_ref"):
+        patch["customer_po_ref"] = stuck["customer_po_ref"]
+    if stuck.get("expected_ship_date"):
+        patch["expected_ship_date"] = stuck["expected_ship_date"]
+    if len(patch) > 1:
+        updates.append(patch)
+
+
 # ── Stuck orders DB join ───────────────────────────────────────────────────
 
 def apply_stuck_orders_to_db(stuck_records: list[dict]) -> tuple[int, int]:
@@ -562,7 +649,8 @@ def apply_stuck_orders_to_db(stuck_records: list[dict]) -> tuple[int, int]:
             batch = inv_list[i : i + chunk]
             resp = (
                 client.table("awb_view")
-                .select("awb, invoice_number")
+                # Fetch extra fields needed for fuzzy fallback
+                .select("awb, invoice_number, customer_name, drop_state, dispatch_date")
                 .in_("invoice_number", batch)
                 .execute()
             )
@@ -585,6 +673,10 @@ def apply_stuck_orders_to_db(stuck_records: list[dict]) -> tuple[int, int]:
                     patch["expected_ship_date"] = stuck["expected_ship_date"]
                 if len(patch) > 1:
                     updates.append(patch)
+
+                # Fuzzy fallback: also try to find the correct B2B MIS AWB
+                # for cases where WMS stored a wrong/old AWB for this invoice
+                _try_fuzzy_update(client, row, stuck, updates)
 
             if updates:
                 client.table("awb_view").upsert(updates, on_conflict="awb").execute()
