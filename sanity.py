@@ -130,11 +130,13 @@ def check_cross_file_consistency(
         t = (tp or "").lower()
         return any(kw in t for kw in ("porter", "poter", "pickup", "self"))
 
-    mask = ~old_dispatch["transporter"].apply(
+    mask = (~old_dispatch["transporter"].apply(
         lambda t: is_self_pickup(str(t) if t is not None else "")
-    )
+    )).astype(bool)
     # Also exclude ORD/ AWBs (Porter format)
-    mask &= ~old_dispatch["awb"].str.upper().str.startswith("ORD/", na=False)
+    # Use astype(bool) + non-inplace & to avoid Arrow/numpy dtype conflicts
+    ord_mask = old_dispatch["awb"].astype(str).str.upper().str.startswith("ORD/", na=False).astype(bool)
+    mask = mask & ~ord_mask
 
     flagged = old_dispatch[mask].copy()
     if flagged.empty:
