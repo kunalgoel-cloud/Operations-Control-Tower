@@ -57,11 +57,12 @@ def resolve_appt_status(row: pd.Series, appt_config: dict[str, bool]) -> str:
     Returns one of: 'N' | 'pending' | 'scheduled' | 'delivered'
     Uses appt_config (from DB) with fallback to Appointment_Required column.
     """
-    status = (row.get("status") or "").upper().strip()
+    # str() converts Arrow scalars to plain Python strings before calling .upper()/.lower()
+    status = str(row.get("status") or "").upper().strip()
     if status == "DELIVERED":
         return "delivered"
 
-    cust_key = (row.get("customer_name") or "").lower().strip()
+    cust_key = str(row.get("customer_name") or "").lower().strip()
     if cust_key in appt_config:
         needs_appt = appt_config[cust_key]
     else:
