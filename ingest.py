@@ -1,0 +1,662 @@
+"""
+ingest.py — File parsing and ingestion for OCT.
+
+Supports CSV and Excel (.xlsx/.xls).
+Ports all GAS v28 business rules faithfully:
+  - File-type auto-detection by column headers
+  - AWB validation (must contain a digit, or start with ORD/)
+  - Status owned exclusively by Courier MIS
+  - Porter/self-pickup DELIVERED detection from WMS
+  - Status normalisation with correct precedence order
+  - All column alias mappings
+"""
+
+from __future__ import annotations
+
+import io
+import re
+from typing import Any
+
+import chardet
+import pandas as pd
+
+import db
+
+# ── AWB helpers ────────────────────────────────────────────────────────────
+
+_AWB_TRAILING_ZEROS = re.compile(r"\.0+$")
+
+
+def norm_awb(v: Any) -> str:
+    s = str(v or "").strip()
+    return _AWB_TRAILING_ZEROS.sub("", s)
+
+
+def is_valid_awb(v: Any) -> bool:
+    """Must contain at least one digit, OR start with ORD/ (Porter)."""
+    s = str(v or "").strip()
+    if not s:
+        return False
+    return bool(re.search(r"\d", s)) or s.upper().startswith("ORD/")
+
+
+# ── Date parser ────────────────────────────────────────────────────────────
+
+def parse_date(val: Any) -> str | None:
+    """Return ISO date string or None."""
+    if val is None or (isinstance(val, float) and val != val):
+        return None
+    s = str(val).strip()
+    if not s or s in ("Invalid Date", "-", "nan", "NaT", "NaN"):
+        return None
+    # DD/MM/YYYY  or  D/M/YYYY
+    m = re.match(r"^(\d{1,2})/(\d{1,2})/(\d{4})$", s)
+    if m:
+        d, mo, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        try:
+            from datetime import date
+            return date(y, mo, d).isoformat()
+        except ValueError:
+            pass
+    try:
+        # ISO format (YYYY-MM-DD…) — skip dayfirst to avoid pandas UserWarning
+        if re.match(r"^\d{4}-\d{2}-\d{2}", s):
+            ts = pd.to_datetime(s, errors="coerce")
+        else:
+            ts = pd.to_datetime(s, dayfirst=True, errors="coerce")
+        if pd.isna(ts):
+            return None
+        return ts.date().isoformat()
+    except Exception:
+        return None
+
+
+def _parse_series_date(series: pd.Series) -> pd.Series:
+    return series.apply(parse_date)
+
+
+# ── File type detection ─────────────────────────────────────────────────────
+
+def detect_file_type(headers: list[str]) -> str:
+    """
+    Returns one of:
+      wms_dispatch | courier_tracking | stuck_orders | appt_config | unknown
+    """
+    lc = {h.lower().strip() for h in headers}
+
+    def has(*cols: str) -> bool:
+        return all(c.lower() in lc for c in cols)
+
+    def has_any(*cols: str) -> bool:
+        return any(c.lower() in lc for c in cols)
+
+    # Appt config: has customer name + appointment column, NO awb column
+    if (
+        "awb" not in lc
+        and has_any("customer name", "customer_name")
+        and has_any(
+            "appointment required", "appointment_required",
+            "appt required", "appointment needed",
+        )
+    ):
+        return "appt_config"
+
+    # WMS dispatch: channel order id/code OR (order created date + shipper)
+    if has_any("channel order id", "channel order code"):
+        return "wms_dispatch"
+    if has("order created date", "shipper"):
+        return "wms_dispatch"
+
+    # Courier tracking: courier partner + awb  OR  reference number + awb + status
+    if has("courier partner", "awb"):
+        return "courier_tracking"
+    if has("reference number", "awb", "status"):
+        return "courier_tracking"
+    if has("awb", "drop city", "drop name"):
+        return "courier_tracking"
+
+    # Stuck orders: so number + days/stage info
+    if has_any("so number", "so_number") and has_any(
+        "days since order", "aging bucket", "current stage", "age (days)",
+    ):
+        return "stuck_orders"
+
+    return "unknown"
+
+
+# ── Column getter (case-insensitive alias lookup) ──────────────────────────
+
+def make_getter(df: pd.DataFrame):
+    """
+    Returns a function get(row, aliases) → first non-empty match.
+    Lookup is case-insensitive.
+    """
+    col_map: dict[str, str] = {c.lower().strip(): c for c in df.columns}
+
+    def get(row: pd.Series, aliases: list[str]) -> Any:
+        for alias in aliases:
+            mapped = col_map.get(alias.lower().strip())
+            if mapped is not None:
+                val = row.get(mapped)
+                if val is not None and str(val).strip() not in ("", "nan", "NaT", "NaN"):
+                    return val
+        return None
+
+    return get
+
+
+# ── Status normalisation (Courier MIS only) ───────────────────────────────
+
+def normalise_status(raw: str) -> str | None:
+    """
+    Returns normalised status or None (for AWB_REGISTERED which is skipped).
+    Order of checks matters — specific patterns must precede broad ones.
+    """
+    s = (raw or "").upper().strip()
+    if not s:
+        return "IN_TRANSIT"
+    if "CANCEL" in s:
+        return "CANCELLED"
+    if "UNDELIVER" in s or "FAIL" in s:
+        return "UNDELIVERED"
+    if "OUT FOR" in s or "OUT_FOR" in s:
+        return "OUT FOR DELIVERY"
+    if "DELIVER" in s:
+        return "DELIVERED"
+    if "RTO" in s or "RETURN" in s:
+        return "RTO"
+    if "MANIFEST" in s or "CLOSED" in s:
+        return "MANIFESTED"
+    if "AWB" in s or "REGISTER" in s:
+        return None   # skip AWB_REGISTERED
+    return "IN_TRANSIT"
+
+
+# ── File reader ────────────────────────────────────────────────────────────
+
+def read_file(uploaded_file) -> pd.DataFrame:
+    """
+    Read an uploaded Streamlit file object (CSV or Excel) into a DataFrame.
+    Handles encoding detection for CSV files.
+    """
+    name = uploaded_file.name.lower()
+    raw_bytes = uploaded_file.read()
+
+    if name.endswith((".xlsx", ".xls")):
+        return pd.read_excel(io.BytesIO(raw_bytes), dtype=str, keep_default_na=False)
+
+    # CSV — detect encoding
+    detected = chardet.detect(raw_bytes[:50_000])
+    encoding = detected.get("encoding") or "utf-8"
+    try:
+        return pd.read_csv(
+            io.BytesIO(raw_bytes),
+            dtype=str,
+            keep_default_na=False,
+            encoding=encoding,
+        )
+    except UnicodeDecodeError:
+        return pd.read_csv(
+            io.BytesIO(raw_bytes),
+            dtype=str,
+            keep_default_na=False,
+            encoding="latin-1",
+        )
+
+
+# ── Ingest: WMS Dispatch ───────────────────────────────────────────────────
+
+def ingest_wms(df: pd.DataFrame) -> list[dict]:
+    """Parse WMS dispatch report into awb_view records."""
+    records: list[dict] = []
+    get = make_getter(df)
+
+    for _, row in df.iterrows():
+        awb = norm_awb(
+            get(row, ["AWB", "AWB Number", "Tracking Number", "LR Number"])
+        )
+        if not awb or not is_valid_awb(awb):
+            continue
+
+        wms_raw_st = str(get(row, ["Status"]) or "").upper()
+        wms_tp = str(get(row, ["Shipper"]) or "").upper()
+
+        is_self_pickup = (
+            "PORTER" in wms_tp
+            or "POTER" in wms_tp      # WMS typo variant
+            or "PICKUP" in wms_tp
+            or "SELF" in wms_tp
+            or awb.upper().startswith("ORD/")
+        )
+        is_closed = any(
+            kw in wms_raw_st
+            for kw in ("CLOSED", "MANIFEST", "DELIVER", "COMPLET")
+        ) or wms_raw_st == "DONE"
+
+        rec: dict[str, Any] = {"awb": awb}
+
+        # Status: only Porter/Self pickup gets a status from WMS
+        if is_self_pickup and is_closed:
+            rec["status"] = "DELIVERED"
+
+        rec["so_number"] = str(
+            get(row, [
+                "Channel Order Id", "Channel Order Code",
+                "SO Number", "SO_Number", "Order Id", "Order ID",
+            ]) or ""
+        ).strip() or None
+
+        rec["customer_name"] = str(
+            get(row, [
+                "Customer Name", "Customer", "Customer_Name",
+                "Consignee Name", "Consignee",
+            ]) or ""
+        ).strip() or None
+
+        rec["drop_city"] = str(
+            get(row, [
+                "Drop City", "Destination City", "Delivery City", "Consignee City",
+            ]) or ""
+        ).strip() or None
+
+        rec["drop_state"] = str(
+            get(row, ["Drop State", "Destination State", "Delivery State"]) or ""
+        ).strip() or None
+
+        rec["transporter"] = str(
+            get(row, [
+                "Shipper", "Carrier", "Courier", "Logistics Partner",
+                "Shipping Partner", "Shipping Method",
+            ]) or ""
+        ).strip() or None
+
+        # Order date: WMS "Order Created Date" ONLY — never "Order Date"
+        rec["order_date"] = parse_date(
+            get(row, ["Order Created Date", "Order_Created_Date"])
+        )
+
+        rec["dispatch_date"] = parse_date(
+            get(row, ["Dispatch Date", "Dispatch_Date", "Shipped Date", "Pickup Date"])
+        )
+
+        rec["expected_ship_date"] = parse_date(
+            get(row, [
+                "Dispatch By Date", "Promise Date",
+                "Expected Ship Date", "SLA Date", "Due Date",
+            ])
+        )
+
+        amt = get(row, [
+            "Invoice Amount", "Invoice Value", "Invoice_Amount",
+            "Order Value", "COD Amount",
+        ])
+        try:
+            rec["invoice_amount"] = float(str(amt).replace(",", "")) if amt else None
+        except (ValueError, TypeError):
+            rec["invoice_amount"] = None
+
+        records.append(rec)
+
+    return records
+
+
+# ── Ingest: Courier MIS ────────────────────────────────────────────────────
+
+def ingest_courier_mis(df: pd.DataFrame) -> list[dict]:
+    """Parse B2B Courier MIS into awb_view records."""
+    records: list[dict] = []
+    get = make_getter(df)
+
+    for _, row in df.iterrows():
+        awb = norm_awb(
+            get(row, [
+                "AWB", "AWB Number", "Consignment Number",
+                "Docket Number", "LR No", "LR Number",
+            ])
+        )
+        if not awb or not is_valid_awb(awb):
+            continue
+
+        raw_st = str(
+            get(row, [
+                "Status", "Current Status", "Shipment Status", "Tracking Status",
+            ]) or ""
+        )
+        norm_st = normalise_status(raw_st)
+        if norm_st is None:   # AWB_REGISTERED — skip entirely
+            continue
+
+        rec: dict[str, Any] = {"awb": awb, "status": norm_st}
+
+        if norm_st == "CANCELLED":
+            records.append(rec)
+            continue
+
+        # Reference number → SO_Number (strip REF prefix)
+        ref = str(get(row, [
+            "Reference Number", "Ref Number", "Reference No", "Order Reference",
+        ]) or "").strip()
+        ref = re.sub(r"^REF", "", ref, flags=re.IGNORECASE).strip()
+        if ref and ref != awb:
+            rec["so_number"] = ref
+
+        rec["invoice_number"] = str(
+            get(row, ["Invoice Number", "Invoice No", "invoice_number"]) or ""
+        ).strip() or None
+
+        rec["customer_name"] = str(
+            get(row, [
+                "Drop Name", "Consignee Name", "Receiver Name",
+                "Recipient Name", "Customer Name", "Consignee",
+            ]) or ""
+        ).strip() or None
+
+        rec["drop_city"] = str(
+            get(row, ["Drop City", "Destination City", "Delivery City"]) or ""
+        ).strip() or None
+
+        rec["drop_state"] = str(
+            get(row, [
+                "Drop State", "Destination State", "Delivery State", "Consignee State",
+            ]) or ""
+        ).strip() or None
+
+        rec["transporter"] = str(
+            get(row, [
+                "Courier Partner", "Carrier", "Logistics Partner",
+                "Courier Name", "Service Provider",
+            ]) or ""
+        ).strip() or None
+
+        # Order_Date intentionally NOT read from Courier MIS
+        rec["dispatch_date"] = parse_date(
+            get(row, [
+                "Dispatch Date", "Pickup Date", "Dispatched Date", "Shipped Date",
+            ])
+        )
+
+        rec["estimated_delivery_date"] = parse_date(
+            get(row, [
+                "Estimated Delivery Date", "EDD", "Expected Delivery Date",
+                "Committed Delivery Date", "Promised Delivery Date",
+                "Scheduled Delivery Date", "Target Delivery Date",
+                "Estimated Delivery", "Exp Del Date", "Expected Del Date",
+                "ETA", "Estimated Date", "Promised Date",
+            ])
+        )
+
+        # Delivery_Date only when DELIVERED
+        if norm_st == "DELIVERED":
+            rec["delivery_date"] = parse_date(
+                get(row, [
+                    "Delivery Date", "Delivered Date",
+                    "Actual Delivery Date", "POD Date",
+                ])
+            )
+
+        amt = get(row, [
+            "Invoice Value", "Invoice Amount", "Declared Value", "COD Amount",
+        ])
+        try:
+            rec["invoice_amount"] = float(str(amt).replace(",", "")) if amt else None
+        except (ValueError, TypeError):
+            rec["invoice_amount"] = None
+
+        rec["pod_url"] = str(
+            get(row, [
+                "POD_URL", "POD URL", "pod_url", "POD Link",
+                "Proof of Delivery URL", "POD Image",
+            ]) or ""
+        ).strip() or None
+
+        rec["latest_remark"] = str(
+            get(row, [
+                "Latest Remark", "Last Remark", "Remarks", "Remark",
+                "Last Status Remark", "Current Remark",
+                "Activity", "Last Activity", "Latest Activity", "Tracking Remark",
+            ]) or ""
+        ).strip() or None
+
+        # Appointment info
+        appt_raw = str(
+            get(row, [
+                "Appointment Required", "Appointment_Required", "Appt Required",
+            ]) or ""
+        ).lower().strip()
+        needs_appt = appt_raw in ("true", "1", "yes")
+        rec["appointment_required"] = needs_appt
+        if needs_appt:
+            rec["appointment_date"] = parse_date(
+                get(row, [
+                    "Appointment Delivery Date", "Appointment Date",
+                    "appointment_delivery_date",
+                ])
+            )
+
+        records.append(rec)
+
+    return records
+
+
+# ── Ingest: RPT Stuck Orders ───────────────────────────────────────────────
+
+def ingest_stuck_orders(df: pd.DataFrame) -> list[dict]:
+    """
+    Stuck orders join on SO_Number.
+    Returns lightweight dicts with only the fields this source owns:
+    so_number (key), invoice_number, customer_po_ref, expected_ship_date.
+    The db layer handles the SO → AWB join via upsert_stuck_records.
+    """
+    records: list[dict] = []
+    get = make_getter(df)
+
+    for _, row in df.iterrows():
+        so = str(
+            get(row, ["SO Number", "SO_Number", "Order Number", "SO #"]) or ""
+        ).strip()
+        if not so:
+            continue
+
+        inv = str(
+            get(row, [
+                "inv_agg.Invoice Numbers", "Invoice Numbers", "Invoice Number",
+                "Invoice No", "Invoice #", "Inv Number", "inv_number",
+                "Invoice Num", "Invoices", "Invoice",
+            ]) or ""
+        ).strip() or None
+
+        po_ref = str(
+            get(row, [
+                "Customer PO Ref", "Customer_PO_Ref", "PO Ref",
+                "PO Reference", "Customer PO", "PO Number",
+            ]) or ""
+        ).strip() or None
+
+        exp_ship = parse_date(
+            get(row, [
+                "Expected Ship Date", "Expected_Ship_Date",
+                "Promise Date", "SLA Date",
+            ])
+        )
+
+        records.append({
+            "so_number": so,
+            "invoice_number": inv,
+            "customer_po_ref": po_ref,
+            "expected_ship_date": exp_ship,
+        })
+
+    return records
+
+
+# ── Ingest: Appt Config ────────────────────────────────────────────────────
+
+def ingest_appt_config(df: pd.DataFrame) -> list[dict]:
+    """Parse appointment config CSV/Excel."""
+    records: list[dict] = []
+    get = make_getter(df)
+
+    for _, row in df.iterrows():
+        name = str(
+            get(row, ["Customer Name", "Customer_Name", "customer"]) or ""
+        ).strip()
+        if not name:
+            continue
+        req_raw = str(
+            get(row, [
+                "Appointment Required", "Appointment_Required",
+                "Appt Required", "appointment needed", "appointment",
+            ]) or ""
+        ).lower().strip()
+        req = req_raw in ("yes", "true", "1")
+        records.append({
+            "customer_name": name,
+            "appointment_required": req,
+        })
+
+    return records
+
+
+# ── Stuck orders DB join ───────────────────────────────────────────────────
+
+def apply_stuck_orders_to_db(stuck_records: list[dict]) -> tuple[int, int]:
+    """
+    Join stuck_orders onto awb_view via SO_Number.
+    Updates invoice_number, customer_po_ref, expected_ship_date.
+    Returns (rows_matched, rows_updated).
+    """
+    if not stuck_records:
+        return 0, 0
+
+    client = db.get_client()
+
+    # Build a lookup: so_number_lower → stuck data
+    so_map: dict[str, dict] = {
+        r["so_number"].lower(): r for r in stuck_records if r.get("so_number")
+    }
+
+    # Fetch all awb rows that have a matching SO
+    so_list = list(so_map.keys())
+    matched = 0
+    updated = 0
+    chunk = 200   # Supabase IN clause limit
+
+    for i in range(0, len(so_list), chunk):
+        batch_sos = so_list[i : i + chunk]
+        resp = (
+            client.table("awb_view")
+            .select("awb, so_number, invoice_number, customer_po_ref, expected_ship_date")
+            .in_("so_number", batch_sos)
+            .execute()
+        )
+        rows = resp.data or []
+        matched += len(rows)
+
+        updates: list[dict] = []
+        for row in rows:
+            so_key = (row.get("so_number") or "").lower()
+            stuck = so_map.get(so_key)
+            if not stuck:
+                continue
+            patch: dict[str, Any] = {"awb": row["awb"]}
+            # RPT Stuck is authoritative for invoice# and PO ref — always overwrite
+            if stuck.get("invoice_number"):
+                patch["invoice_number"] = stuck["invoice_number"]
+            if stuck.get("customer_po_ref"):
+                patch["customer_po_ref"] = stuck["customer_po_ref"]
+            if stuck.get("expected_ship_date"):
+                patch["expected_ship_date"] = stuck["expected_ship_date"]
+            if len(patch) > 1:   # more than just awb key
+                updates.append(patch)
+
+        if updates:
+            client.table("awb_view").upsert(updates, on_conflict="awb").execute()
+            updated += len(updates)
+
+    return matched, updated
+
+
+# ── Main entry point ───────────────────────────────────────────────────────
+
+class IngestResult:
+    def __init__(
+        self,
+        filename: str,
+        file_type: str,
+        rows_processed: int,
+        rows_inserted: int,
+        rows_updated: int,
+        ok: bool = True,
+        message: str = "",
+    ):
+        self.filename = filename
+        self.file_type = file_type
+        self.rows_processed = rows_processed
+        self.rows_inserted = rows_inserted
+        self.rows_updated = rows_updated
+        self.ok = ok
+        self.message = message
+
+
+def process_uploaded_file(uploaded_file) -> IngestResult:
+    """
+    Full pipeline: read → detect → parse → upsert → log.
+    Returns an IngestResult describing what happened.
+    """
+    filename = uploaded_file.name
+
+    try:
+        df = read_file(uploaded_file)
+    except Exception as e:
+        return IngestResult(filename, "unknown", 0, 0, 0, ok=False,
+                            message=f"Could not read file: {e}")
+
+    if df.empty or len(df) < 1:
+        return IngestResult(filename, "unknown", 0, 0, 0, ok=False,
+                            message="File is empty or has no data rows.")
+
+    headers = list(df.columns)
+    file_type = detect_file_type(headers)
+
+    if file_type == "unknown":
+        sample = " | ".join(headers[:10])
+        return IngestResult(
+            filename, "unknown", 0, 0, 0, ok=False,
+            message=(
+                f"File type not recognised. Headers found: {sample}\n"
+                "Expected one of: WMS Dispatch, Courier MIS, RPT Stuck Orders, Appt Config."
+            ),
+        )
+
+    rows_processed = len(df)
+    inserted = updated = 0
+
+    try:
+        if file_type == "wms_dispatch":
+            records = ingest_wms(df)
+            inserted, updated = db.upsert_awb_records(records)
+
+        elif file_type == "courier_tracking":
+            records = ingest_courier_mis(df)
+            inserted, updated = db.upsert_awb_records(records)
+
+        elif file_type == "stuck_orders":
+            stuck = ingest_stuck_orders(df)
+            matched, updated = apply_stuck_orders_to_db(stuck)
+            inserted = 0   # stuck orders never insert new AWBs
+
+        elif file_type == "appt_config":
+            appt_records = ingest_appt_config(df)
+            count = db.upsert_appt_config(appt_records)
+            inserted = count
+
+    except Exception as e:
+        db.log_upload(filename, file_type, rows_processed, 0, 0,
+                      status="error", error_message=str(e))
+        return IngestResult(filename, file_type, rows_processed, 0, 0,
+                            ok=False, message=f"Ingest error: {e}")
+
+    db.log_upload(filename, file_type, rows_processed, inserted, updated)
+    return IngestResult(filename, file_type, rows_processed, inserted, updated,
+                        ok=True,
+                        message=f"{inserted} inserted, {updated} updated")
