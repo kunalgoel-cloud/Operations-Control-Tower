@@ -528,128 +528,6 @@ def ingest_appt_config(df: pd.DataFrame) -> list[dict]:
     return records
 
 
-# ── WMS → MIS enrichment (run at WMS upload time) ─────────────────────────
-
-def enrich_mis_from_wms_records(wms_records: list[dict]) -> int:
-    """
-    After WMS upsert, propagate invoice_number / so_number to the matching
-    B2B MIS AWBs.  Triggered at WMS upload time so MIS records are enriched
-    immediately, without needing a stuck-orders upload.
-
-    Algorithm (in-memory, 2 DB calls total):
-      1. Fetch all awb_view rows where invoice_number IS NULL in one query.
-      2. For each WMS record with invoice + customer + state + date, find the
-         MIS record that matches on first-word(customer) + state + dispatch_date
-         within ±5 days.  Proceed only when exactly 1 candidate found.
-      3. Batch-upsert the matched MIS records.
-
-    Returns number of MIS records enriched.
-    """
-    client = db.get_client()
-
-    # ── Step 1: fetch all un-matched MIS records in one shot ──────────────
-    try:
-        resp = (
-            client.table("awb_view")
-            .select("awb, customer_name, drop_state, dispatch_date")
-            .is_("invoice_number", "null")
-            .limit(5000)
-            .execute()
-        )
-    except Exception:
-        return 0
-
-    mis_pool = resp.data or []
-    if not mis_pool:
-        return 0
-
-    # ── Step 2: match in Python ────────────────────────────────────────────
-    wms_candidates = [
-        r for r in wms_records
-        if r.get("invoice_number")
-        and r.get("customer_name")
-        and r.get("drop_state")
-        and (r.get("dispatch_date") or r.get("expected_ship_date"))
-    ]
-
-    patches: list[dict] = []
-    used_mis_awbs: set[str] = set()
-
-    for wms_rec in wms_candidates:
-        cust     = (wms_rec.get("customer_name") or "").strip()
-        state    = (wms_rec.get("drop_state") or "").strip()
-        wms_awb  = wms_rec.get("awb") or ""
-        ref_date = wms_rec.get("dispatch_date") or wms_rec.get("expected_ship_date")
-
-        # First substantive word of customer name
-        first_word = ""
-        for token in re.split(r"[\s\-_/]+", cust):
-            if token and token.lower() not in _COMPANY_SKIP and len(token) >= 3:
-                first_word = token.upper()
-                break
-        if not first_word:
-            continue
-
-        try:
-            ref_ts = pd.Timestamp(ref_date)
-        except Exception:
-            continue
-
-        # Scan MIS pool for candidates
-        candidates = []
-        for mis in mis_pool:
-            mis_awb = mis.get("awb") or ""
-            if mis_awb == wms_awb or mis_awb in used_mis_awbs:
-                continue
-
-            if (mis.get("drop_state") or "").strip() != state:
-                continue
-
-            mis_cust = (mis.get("customer_name") or "").upper()
-            if first_word not in mis_cust:
-                continue
-
-            mis_disp = mis.get("dispatch_date")
-            if not mis_disp:
-                continue
-            try:
-                if abs((pd.Timestamp(mis_disp) - ref_ts).days) > 5:
-                    continue
-            except Exception:
-                continue
-
-            candidates.append(mis)
-
-        if len(candidates) != 1:
-            continue  # ambiguous or no match
-
-        mis_awb = candidates[0]["awb"]
-        used_mis_awbs.add(mis_awb)
-
-        patch: dict[str, Any] = {"awb": mis_awb}
-        if wms_rec.get("invoice_number"):
-            patch["invoice_number"] = wms_rec["invoice_number"]
-        if wms_rec.get("so_number"):
-            patch["so_number"] = wms_rec["so_number"]
-        if len(patch) > 1:
-            patches.append(patch)
-
-    if not patches:
-        return 0
-
-    # ── Step 3: batch upsert ───────────────────────────────────────────────
-    _chunk = 200
-    for i in range(0, len(patches), _chunk):
-        try:
-            client.table("awb_view").upsert(
-                patches[i : i + _chunk], on_conflict="awb"
-            ).execute()
-        except Exception:
-            pass
-
-    return len(patches)
-
-
 # ── Fuzzy fallback: WMS-AWB → MIS-AWB bridge ──────────────────────────────
 
 # Generic tokens that appear in Indian company names but don't disambiguate
@@ -909,9 +787,6 @@ def process_uploaded_file(uploaded_file) -> IngestResult:
         if file_type == "wms_dispatch":
             records = ingest_wms(df)
             inserted, updated = db.upsert_awb_records(records)
-            # After upserting WMS records, propagate invoice/SO numbers to the
-            # matching B2B MIS AWBs (handles WMS-AWB ≠ MIS-AWB mismatch).
-            enrich_mis_from_wms_records(records)
 
         elif file_type == "courier_tracking":
             records = ingest_courier_mis(df)
