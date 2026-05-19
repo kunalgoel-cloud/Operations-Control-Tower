@@ -239,10 +239,18 @@ def ingest_wms(df: pd.DataFrame) -> list[dict]:
         if is_self_pickup and is_closed:
             rec["status"] = "DELIVERED"
 
+        # SO Number: only from explicit SO columns — NOT from Channel Order Code/Id
+        # (Channel Order Code = "MH/26-27/XXXX" is the INVOICE number, not SO)
         rec["so_number"] = str(
+            get(row, ["SO Number", "SO_Number", "NSO Number"]) or ""
+        ).strip() or None
+
+        # Invoice number: Channel Order Code/Id carries the customer invoice ref
+        rec["invoice_number"] = str(
             get(row, [
-                "Channel Order Id", "Channel Order Code",
-                "SO Number", "SO_Number", "Order Id", "Order ID",
+                "Channel Order Code", "Channel Order Id",
+                "Invoice Number", "Invoice No", "Inv Number",
+                "Channel Inv Number",
             ]) or ""
         ).strip() or None
 
@@ -530,48 +538,92 @@ def apply_stuck_orders_to_db(stuck_records: list[dict]) -> tuple[int, int]:
 
     client = db.get_client()
 
-    # Build a lookup: so_number_lower → stuck data
-    so_map: dict[str, dict] = {
-        r["so_number"].lower(): r for r in stuck_records if r.get("so_number")
-    }
-
-    # Fetch all awb rows that have a matching SO
-    so_list = list(so_map.keys())
     matched = 0
     updated = 0
-    chunk = 200   # Supabase IN clause limit
+    chunk = 200
 
-    for i in range(0, len(so_list), chunk):
-        batch_sos = so_list[i : i + chunk]
-        resp = (
-            client.table("awb_view")
-            .select("awb, so_number, invoice_number, customer_po_ref, expected_ship_date")
-            .in_("so_number", batch_sos)
-            .execute()
-        )
-        rows = resp.data or []
-        matched += len(rows)
+    # ── Path A: join via invoice_number ───────────────────────────────────────
+    # WMS stores Channel Order Code ("MH/26-27/XXXX") as invoice_number.
+    # Stuck Orders has that same value in inv_agg.Invoice Numbers.
+    # Use ORIGINAL case (no .lower()) so PostgREST case-sensitive match works.
+    inv_records = [r for r in stuck_records if r.get("invoice_number")]
+    if inv_records:
+        inv_map: dict[str, dict] = {r["invoice_number"]: r for r in inv_records}
+        inv_list = list(inv_map.keys())
 
-        updates: list[dict] = []
-        for row in rows:
-            so_key = (row.get("so_number") or "").lower()
-            stuck = so_map.get(so_key)
-            if not stuck:
-                continue
-            patch: dict[str, Any] = {"awb": row["awb"]}
-            # RPT Stuck is authoritative for invoice# and PO ref — always overwrite
-            if stuck.get("invoice_number"):
-                patch["invoice_number"] = stuck["invoice_number"]
-            if stuck.get("customer_po_ref"):
-                patch["customer_po_ref"] = stuck["customer_po_ref"]
-            if stuck.get("expected_ship_date"):
-                patch["expected_ship_date"] = stuck["expected_ship_date"]
-            if len(patch) > 1:   # more than just awb key
-                updates.append(patch)
+        for i in range(0, len(inv_list), chunk):
+            batch = inv_list[i : i + chunk]
+            resp = (
+                client.table("awb_view")
+                .select("awb, invoice_number")
+                .in_("invoice_number", batch)
+                .execute()
+            )
+            rows = resp.data or []
+            matched += len(rows)
 
-        if updates:
-            client.table("awb_view").upsert(updates, on_conflict="awb").execute()
-            updated += len(updates)
+            updates: list[dict] = []
+            for row in rows:
+                inv_key = row.get("invoice_number") or ""
+                stuck = inv_map.get(inv_key)
+                if not stuck:
+                    continue
+                patch: dict[str, Any] = {"awb": row["awb"]}
+                # Write SO number, PO ref, expected ship date from stuck orders
+                if stuck.get("so_number"):
+                    patch["so_number"] = stuck["so_number"]
+                if stuck.get("customer_po_ref"):
+                    patch["customer_po_ref"] = stuck["customer_po_ref"]
+                if stuck.get("expected_ship_date"):
+                    patch["expected_ship_date"] = stuck["expected_ship_date"]
+                if len(patch) > 1:
+                    updates.append(patch)
+
+            if updates:
+                client.table("awb_view").upsert(updates, on_conflict="awb").execute()
+                updated += len(updates)
+
+    # ── Path B: join via so_number ────────────────────────────────────────────
+    # Covers AWBs where Courier MIS Reference Number = "NSO-MH/…" (SO format).
+    # BUG FIX: use ORIGINAL case in the .in_() query (not .lower()) —
+    # PostgREST IN filter is case-sensitive.
+    so_records = [r for r in stuck_records if r.get("so_number")]
+    if so_records:
+        # Keep original case for DB query; lowercase for dict lookup
+        so_map_lc: dict[str, dict] = {
+            r["so_number"].lower(): r for r in so_records
+        }
+        so_list_orig = list({r["so_number"] for r in so_records})
+
+        for i in range(0, len(so_list_orig), chunk):
+            batch_sos = so_list_orig[i : i + chunk]
+            resp = (
+                client.table("awb_view")
+                .select("awb, so_number, customer_po_ref, expected_ship_date")
+                .in_("so_number", batch_sos)   # ← original case matches DB
+                .execute()
+            )
+            rows = resp.data or []
+            matched += len(rows)
+
+            updates = []
+            for row in rows:
+                so_key = (row.get("so_number") or "").lower()
+                stuck = so_map_lc.get(so_key)
+                if not stuck:
+                    continue
+                patch = {"awb": row["awb"]}
+                if stuck.get("customer_po_ref"):
+                    patch["customer_po_ref"] = stuck["customer_po_ref"]
+                if stuck.get("expected_ship_date"):
+                    patch["expected_ship_date"] = stuck["expected_ship_date"]
+                # Don't re-write invoice_number here — already handled in Path A
+                if len(patch) > 1:
+                    updates.append(patch)
+
+            if updates:
+                client.table("awb_view").upsert(updates, on_conflict="awb").execute()
+                updated += len(updates)
 
     return matched, updated
 
