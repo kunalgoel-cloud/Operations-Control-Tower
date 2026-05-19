@@ -228,7 +228,7 @@ def render_awb_table(df: pd.DataFrame, key_suffix: str = "main") -> None:
         remark_short = remark[:30] + "…" if len(remark) > 30 else remark
 
         pod_val = str(row.get("pod_url") or "").strip()
-        pod_cell = f"[📄]({pod_val})" if pod_val else "–"
+        pod_cell = pod_val  # plain URL — LinkColumn handles display as "📄"
 
         display_rows.append({
             "SO #":        row.get("so_number") or "–",
