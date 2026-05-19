@@ -72,14 +72,12 @@ def resolve_appt_status(row: pd.Series, appt_config: dict[str, bool]) -> str:
         return "N"
 
     appt_date = row.get("appointment_date")
-    if appt_date is not None and not (
-        isinstance(appt_date, float) and appt_date != appt_date
-    ):
-        try:
-            if pd.notna(appt_date):
-                return "scheduled"
-        except Exception:
-            pass
+    try:
+        has_date = appt_date is not None and not pd.isna(appt_date)
+    except (TypeError, ValueError):
+        has_date = appt_date is not None
+    if has_date:
+        return "scheduled"
 
     return "pending"
 
@@ -97,30 +95,50 @@ def build_display_rows(df: pd.DataFrame, appt_config: dict[str, bool]) -> pd.Dat
 
     today = pd.Timestamp(date.today())
 
+    def _is_null(val) -> bool:
+        """Safely check for null / NaT / NaN across Python, numpy, and Arrow types."""
+        if val is None:
+            return True
+        try:
+            return bool(pd.isna(val))
+        except (TypeError, ValueError):
+            return False
+
+    def _to_ts(val) -> pd.Timestamp | None:
+        """Convert a value to Timestamp, returning None for nulls/errors."""
+        if _is_null(val):
+            return None
+        try:
+            ts = pd.Timestamp(val)
+            return None if pd.isna(ts) else ts
+        except Exception:
+            return None
+
     # ── days_old ──────────────────────────────────────────────────────────
     def calc_days_old(row: pd.Series) -> int:
-        od = row.get("order_date")
-        if pd.notna(od):
-            delta = (today - pd.Timestamp(od)).days
-            return max(0, delta)
-        return 0
+        ts = _to_ts(row.get("order_date"))
+        if ts is None:
+            return 0
+        try:
+            return max(0, (today - ts).days)
+        except Exception:
+            return 0
 
     df = df.copy()
     df["days_old"] = df.apply(calc_days_old, axis=1)
 
     # ── variance (EDD delta) ───────────────────────────────────────────────
     def calc_var(row: pd.Series):
-        edd = row.get("estimated_delivery_date")
-        if pd.isna(edd) if isinstance(edd, float) else edd is None:
+        edd_ts = _to_ts(row.get("estimated_delivery_date"))
+        if edd_ts is None:
             return 0, ""
+        is_deliv = str(row.get("status") or "").upper() == "DELIVERED"
+        base_ts  = _to_ts(row.get("delivery_date")) if is_deliv else None
+        base     = base_ts if base_ts is not None else today
         try:
-            edd_ts = pd.Timestamp(edd)
+            var = int((base - edd_ts).days)
         except Exception:
             return 0, ""
-        is_deliv = (row.get("status") or "").upper() == "DELIVERED"
-        deliv_date = row.get("delivery_date")
-        base = pd.Timestamp(deliv_date) if (is_deliv and pd.notna(deliv_date)) else today
-        var = (base - edd_ts).days
         var_str = (f"+{var}d" if var > 0 else f"{var}d") if var != 0 else "0d"
         return var, var_str
 
@@ -135,18 +153,21 @@ def build_display_rows(df: pd.DataFrame, appt_config: dict[str, bool]) -> pd.Dat
 
     # ── is_deliv_today ────────────────────────────────────────────────────
     def is_today(row: pd.Series) -> bool:
-        if (row.get("status") or "").upper() != "DELIVERED":
+        if str(row.get("status") or "").upper() != "DELIVERED":
             return False
-        dd = row.get("delivery_date")
-        if dd is None or (isinstance(dd, float) and dd != dd):
+        ts = _to_ts(row.get("delivery_date"))
+        if ts is None:
             return False
         try:
-            return pd.Timestamp(dd).date() == date.today()
+            return ts.date() == date.today()
         except Exception:
             return False
 
     df["is_deliv_today"] = df.apply(is_today, axis=1)
-    df["is_delivered"]   = df["status"].str.upper().eq("DELIVERED")
+    # Arrow-safe is_delivered: avoid .str.upper().eq() which can fail on Arrow dtypes
+    df["is_delivered"] = df.apply(
+        lambda r: str(r.get("status") or "").upper() == "DELIVERED", axis=1
+    )
 
     # ── track_url ─────────────────────────────────────────────────────────
     df["track_url"] = df.apply(
