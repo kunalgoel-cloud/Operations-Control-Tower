@@ -66,6 +66,10 @@ def _merge_status(existing: str, incoming: str) -> str:
     if inc == "CANCELLED":
         return "CANCELLED"                 # incoming CANCELLED always wins
 
+    # AWB_REGISTERED only suppresses MANIFESTED/unknown — never a real courier status
+    if inc == "AWB_REGISTERED":
+        return incoming if _status_rank(ex) < _STATUS_RANK["IN_TRANSIT"] else existing
+
     if inc in ("UNDELIVERED", "RTO"):
         return incoming                    # failure can correct a wrong DELIVERED
 
