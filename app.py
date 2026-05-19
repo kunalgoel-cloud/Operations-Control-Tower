@@ -231,11 +231,15 @@ def render_awb_table(df: pd.DataFrame, key_suffix: str = "main") -> None:
         _pod_str = "" if _pod_raw is None else str(_pod_raw).strip()
         pod_cell = _pod_str if _pod_str.startswith("http") else ""
 
+        # AWB cell: plain URL so LinkColumn works; regex extracts AWB for display
+        # URL format: https://www.aftership.com/track?t=<AWB>&c=<carrier>
+        awb_cell = url if (awb and url and url.startswith("http")) else ""
+
         display_rows.append({
             "SO #":        row.get("so_number") or "–",
             "PO Ref":      row.get("customer_po_ref") or "–",
             "Invoice #":   row.get("invoice_number") or "–",
-            "AWB":         f"[{awb}]({url})" if awb else "–",
+            "AWB":         awb_cell,
             "Customer":    row.get("customer_name") or "–",
             "City":        row.get("drop_city") or "–",
             "State":       row.get("drop_state") or "–",
@@ -271,7 +275,8 @@ def render_awb_table(df: pd.DataFrame, key_suffix: str = "main") -> None:
         hide_index=True,
         height=480,
         column_config={
-            "AWB": st.column_config.LinkColumn("AWB", display_text=r".*\[(.+)\].*"),
+            # Regex extracts AWB number from ?t=<AWB>&c=<carrier>
+            "AWB": st.column_config.LinkColumn("AWB", display_text=r"[?&]t=([^&]+)"),
             "POD": st.column_config.LinkColumn("POD", display_text="📄"),
             "Days Old": st.column_config.TextColumn("Days Old"),
         },
