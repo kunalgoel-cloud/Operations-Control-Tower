@@ -403,16 +403,29 @@ def log_upload(
 # no WMS row — no automated bridge to Stuck Orders exists for them.
 # Users enter AWB → SO# manually; Apply pushes them into awb_view.
 
+def _mapping_table_exists() -> bool:
+    """Return True if awb_so_mapping table is present in Supabase."""
+    try:
+        client = get_client()
+        client.table("awb_so_mapping").select("awb").limit(1).execute()
+        return True
+    except Exception:
+        return False
+
+
 def load_awb_so_mapping() -> pd.DataFrame:
-    """Return all rows from awb_so_mapping as a DataFrame."""
-    client = get_client()
-    resp = (
-        client.table("awb_so_mapping")
-        .select("*")
-        .order("created_at", desc=True)
-        .execute()
-    )
-    return pd.DataFrame(resp.data) if resp.data else pd.DataFrame()
+    """Return all rows from awb_so_mapping as a DataFrame, or empty if table missing."""
+    try:
+        client = get_client()
+        resp = (
+            client.table("awb_so_mapping")
+            .select("*")
+            .order("created_at", desc=True)
+            .execute()
+        )
+        return pd.DataFrame(resp.data) if resp.data else pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
 
 
 def upsert_awb_so_mapping(records: list[dict]) -> int:
