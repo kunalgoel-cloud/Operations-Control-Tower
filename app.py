@@ -21,6 +21,18 @@ import ingest
 import kpis
 import sanity
 
+
+# ── Cached-file wrapper (for re-running last upload) ───────────────────────
+
+class _CachedFile:
+    """Minimal file-like object that re-presents stored bytes to process_uploaded_file."""
+    def __init__(self, name: str, data: bytes):
+        self.name = name
+        self._data = data
+
+    def read(self) -> bytes:
+        return self._data
+
 # ── Page config ────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Operations Control Tower",
@@ -425,6 +437,38 @@ def tab_dashboard(df: pd.DataFrame, kpi_vals: dict) -> None:
 # TAB: UPLOAD
 # ══════════════════════════════════════════════════════════════════════════
 
+def _run_ingest(file_objects: list) -> None:
+    """Shared ingest runner used by both the uploader and the re-run button."""
+    results = []
+    progress = st.progress(0)
+    for i, uf in enumerate(file_objects):
+        with st.spinner(f"Processing {uf.name}…"):
+            result = ingest.process_uploaded_file(uf)
+        results.append(result)
+        progress.progress((i + 1) / len(file_objects))
+
+    progress.empty()
+
+    st.markdown("#### Results")
+    all_ok = True
+    for r in results:
+        if r.ok:
+            st.success(
+                f"✅ **{r.filename}** ({r.file_type}) — "
+                f"{r.rows_processed} rows processed · "
+                f"{r.rows_inserted} inserted · {r.rows_updated} updated"
+            )
+        else:
+            all_ok = False
+            st.error(f"❌ **{r.filename}** — {r.message}")
+
+    if all_ok:
+        st.info("All files ingested. Dashboard data will refresh automatically.")
+        _cached_load.clear()
+        time.sleep(1)
+        st.rerun()
+
+
 def tab_upload() -> None:
     st.markdown("### ⬆️ Upload Files")
     st.markdown(
@@ -433,6 +477,19 @@ def tab_upload() -> None:
         "Appointment Config  |  **Formats:** CSV, Excel (.xlsx / .xls)"
     )
 
+    # ── Re-run last ingest ────────────────────────────────────────────────
+    cached = st.session_state.get("last_upload_cache")  # list of {name, data}
+    if cached:
+        cached_names = ", ".join(c["name"] for c in cached)
+        st.info(f"**Last ingested:** {cached_names}")
+        if st.button("🔄 Re-run Last Ingest", key="rerun_btn"):
+            file_objects = [_CachedFile(c["name"], c["data"]) for c in cached]
+            _run_ingest(file_objects)
+            return
+
+    st.markdown("---")
+
+    # ── New upload ────────────────────────────────────────────────────────
     uploaded = st.file_uploader(
         "Drop files here or click to browse",
         type=["csv", "xlsx", "xls"],
@@ -447,35 +504,16 @@ def tab_upload() -> None:
     st.markdown(f"**{len(uploaded)} file(s) ready**")
 
     if st.button("🚀 Ingest All Files", type="primary"):
-        results = []
-        progress = st.progress(0)
-        for i, uf in enumerate(uploaded):
-            with st.spinner(f"Processing {uf.name}…"):
-                result = ingest.process_uploaded_file(uf)
-            results.append(result)
-            progress.progress((i + 1) / len(uploaded))
+        # Cache raw bytes before reading (read() is consumed during ingest)
+        file_cache = []
+        file_objects = []
+        for uf in uploaded:
+            raw = uf.read()
+            file_cache.append({"name": uf.name, "data": raw})
+            file_objects.append(_CachedFile(uf.name, raw))
 
-        progress.empty()
-
-        # Show results
-        st.markdown("#### Results")
-        all_ok = True
-        for r in results:
-            if r.ok:
-                st.success(
-                    f"✅ **{r.filename}** ({r.file_type}) — "
-                    f"{r.rows_processed} rows processed · "
-                    f"{r.rows_inserted} inserted · {r.rows_updated} updated"
-                )
-            else:
-                all_ok = False
-                st.error(f"❌ **{r.filename}** — {r.message}")
-
-        if all_ok:
-            st.info("All files ingested. Dashboard data will refresh automatically.")
-            _cached_load.clear()
-            time.sleep(1)
-            st.rerun()
+        st.session_state["last_upload_cache"] = file_cache
+        _run_ingest(file_objects)
 
 
 # ══════════════════════════════════════════════════════════════════════════
