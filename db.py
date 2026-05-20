@@ -12,6 +12,7 @@ Sticky upsert rules (mirrors GAS v28):
 from __future__ import annotations
 
 import os
+import re
 from datetime import date, datetime
 from typing import Any
 
@@ -313,10 +314,15 @@ def _merge_record(existing: dict, incoming: dict) -> dict:
         merged["customer_name"] = inc_name
 
     # ── SO_Number: NSO variant preferred; else first-write ────────────────
-    inc_so = incoming.get("so_number") or ""
-    ex_so = existing.get("so_number") or ""
+    # Pure-numeric existing values (e.g. WMS internal "Order Id" like "3443")
+    # are treated as empty — any real incoming SO reference will overwrite them.
+    inc_so = (incoming.get("so_number") or "").strip()
+    ex_so  = (existing.get("so_number") or "").strip()
+    ex_is_numeric = bool(re.match(r"^\d+$", ex_so)) if ex_so else False
     if inc_so:
-        if "NSO" in inc_so.upper() and "NSO" not in ex_so.upper():
+        if ex_is_numeric:
+            merged["so_number"] = inc_so          # always replace stale numeric WMS Id
+        elif "NSO" in inc_so.upper() and "NSO" not in ex_so.upper():
             merged["so_number"] = inc_so
         elif not ex_so:
             merged["so_number"] = inc_so
