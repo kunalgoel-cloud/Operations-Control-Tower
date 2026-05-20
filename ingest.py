@@ -287,12 +287,8 @@ def ingest_wms(df: pd.DataFrame) -> list[dict]:
             get(row, ["Dispatch Date", "Dispatch_Date", "Shipped Date", "Pickup Date"])
         )
 
-        rec["expected_ship_date"] = parse_date(
-            get(row, [
-                "Dispatch By Date", "Promise Date",
-                "Expected Ship Date", "SLA Date", "Due Date",
-            ])
-        )
+        # expected_ship_date is intentionally NOT read from WMS —
+        # it is owned exclusively by the Stuck Orders report (SLA/promise date).
 
         amt = get(row, [
             "Invoice Amount", "Invoice Value", "Invoice_Amount",
