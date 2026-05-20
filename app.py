@@ -218,11 +218,10 @@ def render_awb_table(df: pd.DataFrame, key_suffix: str = "main") -> None:
         awb    = row.get("awb", "")
         url    = row.get("track_url", "#")
         is_del = row.get("is_delivered", False)
-        d_old  = row.get("days_old", 0)
-        days_cell = f"**{d_old}**" if d_old > 14 and not is_del else str(d_old)
+        d_old  = int(row.get("days_old", 0) or 0)
 
         remark = str(row.get("latest_remark") or "")
-        remark_short = remark[:30] + "…" if len(remark) > 30 else remark
+        remark_short = remark[:40] + "…" if len(remark) > 40 else remark
 
         _pod_raw = row.get("pod_url")
         pod_cell = str(_pod_raw).strip() if _pod_raw and str(_pod_raw).startswith("http") else ""
@@ -239,7 +238,7 @@ def render_awb_table(df: pd.DataFrame, key_suffix: str = "main") -> None:
             "Transporter":   row.get("transporter") or "–",
             "Order Date":    fmt_date(row.get("order_date")),
             "Dispatch":      fmt_date(row.get("dispatch_date")),
-            "Days Old":      days_cell,
+            "Days Old":      d_old,
             "Exp Ship":      fmt_date(row.get("expected_ship_date")),
             "Status":        row.get("status") or "–",
             "Del Date":      fmt_date(row.get("delivery_date")),
@@ -253,15 +252,71 @@ def render_awb_table(df: pd.DataFrame, key_suffix: str = "main") -> None:
 
     disp_df = pd.DataFrame(display_rows)
 
+    # ── Row colours by status + stuck-days highlight ──────────────────────
+    _STATUS_BG = {
+        "delivered":   "#EAFAF1",   # soft green
+        "undelivered": "#FEF9E7",   # soft yellow
+        "rto":         "#FEF5E7",   # soft orange
+        "out_for":     "#EBF5FB",   # soft blue
+        "cancelled":   "#FDEDEC",   # soft red
+        "manifested":  "#F8F9FA",   # light grey
+        "default":     "#FFFFFF",
+    }
+
+    def _classify(status: str) -> str:
+        s = (status or "").upper().strip()
+        if "CANCEL" in s:                        return "cancelled"
+        if "UNDELIVER" in s or "FAIL" in s:      return "undelivered"
+        if "RTO" in s or "RETURN" in s:          return "rto"
+        if "OUT FOR" in s or "OUT_FOR" in s:     return "out_for"
+        if "DELIVER" in s:                       return "delivered"
+        if "MANIFEST" in s:                      return "manifested"
+        return "default"
+
+    col_idx = {col: i for i, col in enumerate(disp_df.columns)}
+
+    def _row_style(row: pd.Series) -> list[str]:
+        cls = _classify(row.get("Status", ""))
+        bg  = _STATUS_BG[cls]
+        styles = [f"background-color: {bg}"] * len(row)
+        # Bold red for Days Old > 14 on non-delivered rows
+        if cls not in ("delivered", "cancelled"):
+            d = row.get("Days Old", 0)
+            if isinstance(d, (int, float)) and int(d) > 14:
+                i = col_idx.get("Days Old", -1)
+                if i >= 0:
+                    styles[i] = f"background-color: {bg}; color: #C5221F; font-weight: 700"
+        return styles
+
+    styled = disp_df.style.apply(_row_style, axis=1)
+
+    # ── Column widths ─────────────────────────────────────────────────────
     st.dataframe(
-        disp_df,
+        styled,
         use_container_width=True,
         hide_index=True,
-        height=540,
+        height=560,
         column_config={
-            "AWB":      st.column_config.LinkColumn("AWB", display_text=r"[?&]t=([^&]+)"),
-            "POD":      st.column_config.LinkColumn("POD", display_text="📄"),
-            "Days Old": st.column_config.TextColumn("Days Old"),
+            "SO #":          st.column_config.TextColumn("SO #",          width=165),
+            "PO Ref":        st.column_config.TextColumn("PO Ref",        width=120),
+            "Invoice #":     st.column_config.TextColumn("Invoice #",     width=155),
+            "AWB":           st.column_config.LinkColumn("AWB",           display_text=r"[?&]t=([^&]+)", width=140),
+            "Customer":      st.column_config.TextColumn("Customer",      width=195),
+            "City":          st.column_config.TextColumn("City",          width=105),
+            "State":         st.column_config.TextColumn("State",         width=105),
+            "Transporter":   st.column_config.TextColumn("Transporter",   width=120),
+            "Order Date":    st.column_config.TextColumn("Order Date",    width=90),
+            "Dispatch":      st.column_config.TextColumn("Dispatch",      width=90),
+            "Days Old":      st.column_config.NumberColumn("Days Old",    width=78,  format="%d d"),
+            "Exp Ship":      st.column_config.TextColumn("Exp Ship",      width=90),
+            "Status":        st.column_config.TextColumn("Status",        width=135),
+            "Del Date":      st.column_config.TextColumn("Del Date",      width=90),
+            "EDD":           st.column_config.TextColumn("EDD",           width=90),
+            "Variance":      st.column_config.TextColumn("Variance",      width=80),
+            "Appt":          st.column_config.TextColumn("Appt",          width=105),
+            "Appt Date":     st.column_config.TextColumn("Appt Date",     width=100),
+            "POD":           st.column_config.LinkColumn("POD",           display_text="📄", width=55),
+            "Latest Remark": st.column_config.TextColumn("Latest Remark", width=210),
         },
     )
 
