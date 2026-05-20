@@ -413,6 +413,41 @@ def _mapping_table_exists() -> bool:
         return False
 
 
+def upsert_stuck_orders_cache(records: list[dict]) -> int:
+    """
+    Persist SO# data from a Stuck Orders ingest so that apply_manual_so_mapping()
+    can later look up expected_ship_date without requiring a re-upload.
+    Records are the lightweight dicts returned by ingest_stuck_orders().
+    Returns count written.
+    """
+    if not records:
+        return 0
+    try:
+        to_upsert: list[dict] = []
+        for r in records:
+            so = (r.get("so_number") or "").strip()
+            if not so:
+                continue
+            to_upsert.append({
+                "so_number":          so,
+                "invoice_numbers":    (r.get("invoice_number") or None),
+                "customer_po_ref":    (r.get("customer_po_ref") or None),
+                "expected_ship_date": (r.get("expected_ship_date") or None),
+                "customer_name":      (r.get("customer_name") or None),
+            })
+        if not to_upsert:
+            return 0
+        client = get_client()
+        chunk = 200
+        for i in range(0, len(to_upsert), chunk):
+            client.table("stuck_orders_cache").upsert(
+                to_upsert[i : i + chunk], on_conflict="so_number"
+            ).execute()
+        return len(to_upsert)
+    except Exception:
+        return 0  # silently skip if table doesn't exist yet
+
+
 def load_awb_so_mapping() -> pd.DataFrame:
     """Return all rows from awb_so_mapping as a DataFrame, or empty if table missing."""
     try:
@@ -445,7 +480,11 @@ def delete_awb_so_mapping(awb: str) -> None:
 def apply_manual_so_mapping() -> int:
     """
     Read all awb_so_mapping rows and write so_number / invoice_number /
-    customer_po_ref into awb_view (manual override — always wins).
+    customer_po_ref / expected_ship_date into awb_view.
+
+    expected_ship_date is resolved by looking up the SO# in stuck_orders_cache
+    (populated automatically every time a Stuck Orders file is ingested).
+    Manual override always wins over existing awb_view values.
     Returns number of awb_view rows patched.
     """
     client = get_client()
@@ -454,15 +493,50 @@ def apply_manual_so_mapping() -> int:
     if not mappings:
         return 0
 
+    # ── Look up expected_ship_date from stuck_orders_cache ────────────────
+    so_numbers = [m["so_number"] for m in mappings if m.get("so_number")]
+    cache_map: dict[str, dict] = {}  # so_number → cache row
+    if so_numbers:
+        try:
+            chunk = 200
+            for i in range(0, len(so_numbers), chunk):
+                batch = so_numbers[i : i + chunk]
+                r = (
+                    client.table("stuck_orders_cache")
+                    .select("so_number,invoice_numbers,customer_po_ref,expected_ship_date")
+                    .in_("so_number", batch)
+                    .execute()
+                )
+                for row in (r.data or []):
+                    if row.get("so_number"):
+                        cache_map[row["so_number"]] = row
+        except Exception:
+            pass  # cache table may not exist yet — proceed without it
+
+    # ── Build patches ─────────────────────────────────────────────────────
     updates: list[dict] = []
     for m in mappings:
         patch: dict = {"awb": m["awb"]}
-        if m.get("so_number"):
-            patch["so_number"] = m["so_number"]
+        so = m.get("so_number") or ""
+        if so:
+            patch["so_number"] = so
+
+        # invoice_number: manual entry wins; fall back to cache's accounting invoices
         if m.get("invoice_number"):
             patch["invoice_number"] = m["invoice_number"]
+        elif so and cache_map.get(so, {}).get("invoice_numbers"):
+            patch["invoice_number"] = cache_map[so]["invoice_numbers"]
+
+        # customer_po_ref: manual entry wins; fall back to cache
         if m.get("customer_po_ref"):
             patch["customer_po_ref"] = m["customer_po_ref"]
+        elif so and cache_map.get(so, {}).get("customer_po_ref"):
+            patch["customer_po_ref"] = cache_map[so]["customer_po_ref"]
+
+        # expected_ship_date: sourced exclusively from stuck_orders_cache
+        if so and cache_map.get(so, {}).get("expected_ship_date"):
+            patch["expected_ship_date"] = cache_map[so]["expected_ship_date"]
+
         if len(patch) > 1:
             updates.append(patch)
 
