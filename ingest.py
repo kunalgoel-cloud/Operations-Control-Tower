@@ -344,7 +344,16 @@ def ingest_courier_mis(df: pd.DataFrame) -> list[dict]:
             "Reference Number", "Ref Number", "Reference No", "Order Reference",
         ]) or "").strip()
         ref = re.sub(r"^REF", "", ref, flags=re.IGNORECASE).strip()
-        if ref and ref != awb:
+        # Only store as so_number if it looks like a business SO reference:
+        # - not empty / not equal to the AWB
+        # - does NOT start with '_' (carrier-internal refs like _100035069731)
+        # - is NOT purely numeric (bare AWB stored as reference)
+        if (
+            ref
+            and ref != awb
+            and not ref.startswith("_")
+            and not re.match(r"^\d+$", ref)
+        ):
             rec["so_number"] = ref
 
         rec["invoice_number"] = str(
