@@ -321,17 +321,10 @@ def _merge_record(existing: dict, incoming: dict) -> dict:
         elif not ex_so:
             merged["so_number"] = inc_so
 
-    # ── expected_ship_date: stuck-orders value is authoritative; don't let
-    #    WMS overwrite it once it has been set from stuck orders ─────────────
-    if incoming.get("expected_ship_date") and not existing.get("expected_ship_date"):
-        merged["expected_ship_date"] = incoming["expected_ship_date"]
-    # (if existing already has a value, keep it — stuck orders owns this field)
-
     # ── All other fields: incoming non-empty overwrites ───────────────────
     skip = {
         "awb", "status", "delivery_date",
         "drop_city", "drop_state", "customer_name", "so_number",
-        "expected_ship_date",   # handled above
         "created_at", "updated_at",
     }
     for col, val in incoming.items():
