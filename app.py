@@ -337,55 +337,80 @@ def kpi_cards(kpi_vals: dict) -> None:
 # ══════════════════════════════════════════════════════════════════════════
 
 _TIME_OPTIONS = {
-    "This Month":    0,    # current calendar month
+    "This Month":    0,
     "Last 3 Months": 3,
     "Last 6 Months": 6,
     "Last 12 Months": 12,
     "All Time":      None,
+    "Custom Range":  "custom",
 }
 
 
-def _apply_time_filter(df: pd.DataFrame, label: str) -> pd.DataFrame:
+def _apply_time_filter(
+    df: pd.DataFrame,
+    label: str,
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> pd.DataFrame:
     """
-    Filter df by dispatch_date based on the selected time window label.
-    Records with no dispatch_date are always kept (active with no date info).
+    Filter df by dispatch_date.
+    Records with no dispatch_date are always kept.
     """
-    if df.empty:
+    if df.empty or "dispatch_date" not in df.columns:
         return df
+
     months = _TIME_OPTIONS.get(label)
+    mask_no_date = df["dispatch_date"].isna()
+
+    if label == "Custom Range":
+        if date_from is None and date_to is None:
+            return df
+        mask = mask_no_date
+        if date_from:
+            mask = mask | (df["dispatch_date"] >= pd.Timestamp(date_from))
+        if date_to:
+            mask = mask & (mask_no_date | (df["dispatch_date"] <= pd.Timestamp(date_to)))
+            # rebuild: no_date OR (within from AND within to)
+            lo = pd.Timestamp(date_from) if date_from else pd.Timestamp.min
+            hi = pd.Timestamp(date_to)   if date_to   else pd.Timestamp.max
+            mask = mask_no_date | (
+                (df["dispatch_date"] >= lo) & (df["dispatch_date"] <= hi)
+            )
+        return df[mask]
+
     if months is None:
-        return df   # All Time — no filter
+        return df   # All Time
 
     now = pd.Timestamp.now().normalize()
     if months == 0:
-        # Current calendar month: from the 1st of this month
         cutoff = now.replace(day=1)
     else:
-        # N calendar months back from the 1st of this month
-        first_of_this = now.replace(day=1)
-        cutoff = first_of_this - pd.DateOffset(months=months)
+        cutoff = now.replace(day=1) - pd.DateOffset(months=months)
 
-    col = "dispatch_date"
-    if col not in df.columns:
-        return df
-
-    mask_no_date  = df[col].isna()
-    mask_in_window = df[col] >= cutoff
-    return df[mask_no_date | mask_in_window]
+    return df[mask_no_date | (df["dispatch_date"] >= cutoff)]
 
 
 def tab_dashboard(df: pd.DataFrame, kpi_vals: dict) -> None:
     # ── Time window filter (gates the entire dashboard) ───────────────────
-    tw_col, _ = st.columns([2, 8])
-    with tw_col:
+    sel_col, from_col, to_col, _ = st.columns([2, 1.5, 1.5, 5])
+
+    with sel_col:
         time_sel = st.selectbox(
-            "📅 Time Window",
+            "📅 Dispatch Date Filter",
             options=list(_TIME_OPTIONS.keys()),
             index=1,          # default: Last 3 Months
             key="time_window",
         )
 
-    df = _apply_time_filter(df, time_sel)
+    date_from = date_to = None
+    if time_sel == "Custom Range":
+        today = date.today()
+        with from_col:
+            date_from = st.date_input("From", value=today.replace(day=1), key="custom_from")
+        with to_col:
+            date_to = st.date_input("To", value=today, key="custom_to")
+
+    df = _apply_time_filter(df, time_sel, date_from, date_to)
     # Recompute KPIs on the filtered slice
     kpi_vals = kpis.compute_kpis(df) if not df.empty else {}
 
