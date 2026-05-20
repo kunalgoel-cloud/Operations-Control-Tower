@@ -829,6 +829,26 @@ def tab_manual_mapping(df: pd.DataFrame) -> None:
         "Click **Apply** to push the values into the main AWB tracker."
     )
 
+    # ── Gate: check table exists ──────────────────────────────────────────
+    if not db._mapping_table_exists():
+        st.error(
+            "**Setup required:** the `awb_so_mapping` table does not exist yet in Supabase.\n\n"
+            "Run the SQL migration once in **Supabase → SQL Editor**, then refresh this page:"
+        )
+        st.code(
+            """CREATE TABLE IF NOT EXISTS awb_so_mapping (
+    awb             TEXT PRIMARY KEY,
+    so_number       TEXT,
+    invoice_number  TEXT,
+    customer_po_ref TEXT,
+    notes           TEXT,
+    created_at      TIMESTAMPTZ DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ DEFAULT NOW()
+);""",
+            language="sql",
+        )
+        return
+
     # ── Candidate AWBs (no SO# yet) ───────────────────────────────────────
     with st.expander("📋 AWBs with no SO# (candidates)", expanded=True):
         if df.empty:
