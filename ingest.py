@@ -823,17 +823,14 @@ def apply_stuck_orders_to_db(stuck_records: list[dict]) -> tuple[int, int]:
                 if not stuck:
                     continue
                 patch: dict[str, Any] = {"awb": row["awb"]}
-                # Write SO number (primary goal of Path B2)
                 if stuck.get("so_number"):
                     patch["so_number"] = stuck["so_number"]
+                if stuck.get("invoice_number"):
+                    patch["invoice_number"] = stuck["invoice_number"]
                 if stuck.get("customer_po_ref"):
                     patch["customer_po_ref"] = stuck["customer_po_ref"]
                 if stuck.get("expected_ship_date"):
                     patch["expected_ship_date"] = stuck["expected_ship_date"]
-                # NOTE: do NOT overwrite invoice_number — awb_view already holds the
-                # WMS Channel Order Code there (e.g. "NSO-MH/2026/0051") which is the
-                # correct display value. The stuck orders inv_agg.Invoice Numbers is a
-                # separate accounting ref that would replace the useful order identifier.
                 if len(patch) > 1:
                     updates.append(patch)
 
