@@ -327,10 +327,25 @@ def _merge_record(existing: dict, incoming: dict) -> dict:
         elif not ex_so:
             merged["so_number"] = inc_so
 
+    # ── Invoice_Number: accounting format (MH/…) beats order-code (NSO-MH/…) ──
+    # WMS writes Channel Order Code ("NSO-MH/2026/0049") as invoice_number.
+    # Stuck Orders writes the real accounting invoice ("MH/26-27/0055").
+    # Rule: once an accounting-format invoice is recorded, don't let WMS overwrite it.
+    inc_inv = (incoming.get("invoice_number") or "").strip()
+    ex_inv  = (existing.get("invoice_number") or "").strip()
+    if inc_inv:
+        ex_is_accounting = ex_inv.upper().startswith("MH/")
+        inc_is_order_code = inc_inv.upper().startswith("NSO-") or inc_inv.upper().startswith("NSO/")
+        if ex_is_accounting and inc_is_order_code:
+            pass   # protect real invoice from being replaced by order code
+        else:
+            merged["invoice_number"] = inc_inv
+
     # ── All other fields: incoming non-empty overwrites ───────────────────
     skip = {
         "awb", "status", "delivery_date",
         "drop_city", "drop_state", "customer_name", "so_number",
+        "invoice_number",          # handled explicitly above
         "created_at", "updated_at",
     }
     for col, val in incoming.items():
