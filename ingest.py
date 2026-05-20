@@ -239,10 +239,14 @@ def ingest_wms(df: pd.DataFrame) -> list[dict]:
         if is_self_pickup and is_closed:
             rec["status"] = "DELIVERED"
 
-        # SO Number: only from explicit SO columns — NOT from Channel Order Code/Id
-        # (Channel Order Code = "MH/26-27/XXXX" is the INVOICE number, not SO)
+        # SO / Order Number: WMS may name this field in various ways.
+        # Captures NSO/ format ("SO Number") and plain order number columns.
         rec["so_number"] = str(
-            get(row, ["SO Number", "SO_Number", "NSO Number"]) or ""
+            get(row, [
+                "SO Number", "SO_Number", "NSO Number",
+                "Order Number", "Order No", "Order #", "Order_Number",
+                "Order Id", "Order ID",
+            ]) or ""
         ).strip() or None
 
         # Invoice number: Channel Order Code/Id carries the customer invoice ref
@@ -468,10 +472,11 @@ def ingest_stuck_orders(df: pd.DataFrame) -> list[dict]:
 
     for _, row in df.iterrows():
         so = str(
-            get(row, ["SO Number", "SO_Number", "Order Number", "SO #"]) or ""
-        ).strip()
-        if not so:
-            continue
+            get(row, [
+                "SO Number", "SO_Number", "Order Number", "SO #",
+                "NSO Number", "Order No", "Order_Number",
+            ]) or ""
+        ).strip() or None
 
         inv = str(
             get(row, [
@@ -480,6 +485,10 @@ def ingest_stuck_orders(df: pd.DataFrame) -> list[dict]:
                 "Invoice Num", "Invoices", "Invoice",
             ]) or ""
         ).strip() or None
+
+        # Need at least one identifier to be able to join to an AWB
+        if not so and not inv:
+            continue
 
         po_ref = str(
             get(row, [
@@ -756,6 +765,61 @@ def apply_stuck_orders_to_db(stuck_records: list[dict]) -> tuple[int, int]:
             # Track which SOs were resolved
             for row in rows:
                 matched_so_set.add((row.get("so_number") or "").lower().strip())
+
+    # ── Path B2: stuck.so_number → awb_view.invoice_number ──────────────────
+    # Covers: WMS stored the order ref as Channel Order Code (→ invoice_number)
+    # while stuck orders has the same value as its SO Number.
+    # e.g. WMS Channel Order Code = "NSO-MH/2026/0049" → awb_view.invoice_number
+    #      stuck orders SO Number  = "NSO-MH/2026/0049"
+    so_via_inv_records = [
+        r for r in stuck_records
+        if r.get("so_number")
+        and r["so_number"].lower() not in matched_so_set
+    ]
+    if so_via_inv_records:
+        so_to_inv_map: dict[str, dict] = {
+            r["so_number"]: r for r in so_via_inv_records
+        }
+        so_to_inv_list = list(so_to_inv_map.keys())
+
+        for i in range(0, len(so_to_inv_list), chunk):
+            batch = so_to_inv_list[i : i + chunk]
+            resp = (
+                client.table("awb_view")
+                .select("awb, invoice_number")
+                .in_("invoice_number", batch)
+                .execute()
+            )
+            rows = resp.data or []
+            matched += len(rows)
+
+            updates = []
+            for row in rows:
+                inv_key = (row.get("invoice_number") or "").strip()
+                stuck = so_to_inv_map.get(inv_key)
+                if not stuck:
+                    continue
+                patch: dict[str, Any] = {"awb": row["awb"]}
+                # Primary goal: write the SO number
+                if stuck.get("so_number"):
+                    patch["so_number"] = stuck["so_number"]
+                # Also write other fields if not already set
+                if stuck.get("invoice_number"):
+                    patch["invoice_number"] = stuck["invoice_number"]
+                if stuck.get("customer_po_ref"):
+                    patch["customer_po_ref"] = stuck["customer_po_ref"]
+                if stuck.get("expected_ship_date"):
+                    patch["expected_ship_date"] = stuck["expected_ship_date"]
+                if len(patch) > 1:
+                    updates.append(patch)
+
+            if updates:
+                client.table("awb_view").upsert(updates, on_conflict="awb").execute()
+                updated += len(updates)
+
+            # Track resolved SO numbers so Path C skips them
+            for row in rows:
+                matched_so_set.add((row.get("invoice_number") or "").lower().strip())
 
     # ── Path C: join via customer_name + dispatch_date (fallback) ─────────────
     # For stuck records not matched by invoice or SO, try customer name +
