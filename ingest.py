@@ -1001,6 +1001,9 @@ def process_uploaded_file(uploaded_file) -> IngestResult:
 
         elif file_type == "stuck_orders":
             stuck = ingest_stuck_orders(df)
+            # Persist SO# data to cache so manual mappings can look up
+            # expected_ship_date later without requiring a re-upload.
+            db.upsert_stuck_orders_cache(stuck)
             matched, updated = apply_stuck_orders_to_db(stuck)
             inserted = 0   # stuck orders never insert new AWBs
 
