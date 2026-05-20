@@ -818,6 +818,121 @@ def tab_settings() -> None:
 
 
 # ══════════════════════════════════════════════════════════════════════════
+# TAB: MANUAL SO MAPPING
+# ══════════════════════════════════════════════════════════════════════════
+
+def tab_manual_mapping(df: pd.DataFrame) -> None:
+    st.markdown("### 🔗 Manual SO Mapping")
+    st.markdown(
+        "For AWBs booked **directly on the courier portal** (no WMS row), "
+        "the automated SO# join can't work. Enter the mapping here manually. "
+        "Click **Apply** to push the values into the main AWB tracker."
+    )
+
+    # ── Candidate AWBs (no SO# yet) ───────────────────────────────────────
+    with st.expander("📋 AWBs with no SO# (candidates)", expanded=True):
+        if df.empty:
+            st.info("No data loaded yet.")
+        else:
+            no_so = df[
+                df["so_number"].isna() | (df["so_number"].str.strip() == "–") | (df["so_number"].str.strip() == "")
+            ][["awb", "customer_name", "drop_city", "drop_state", "transporter",
+               "dispatch_date", "status"]].copy()
+            no_so["dispatch_date"] = no_so["dispatch_date"].apply(fmt_date)
+            no_so = no_so.rename(columns={
+                "awb": "AWB", "customer_name": "Customer",
+                "drop_city": "City", "drop_state": "State",
+                "transporter": "Transporter", "dispatch_date": "Dispatch",
+                "status": "Status",
+            })
+            if no_so.empty:
+                st.success("✅ All AWBs have a SO# — nothing to map.")
+            else:
+                st.caption(f"{len(no_so)} AWBs without SO#")
+                st.dataframe(no_so, use_container_width=True, hide_index=True, height=260)
+
+    st.markdown("---")
+
+    # ── Add new mapping ───────────────────────────────────────────────────
+    st.markdown("#### ➕ Add / Update Mapping")
+    m1, m2, m3, m4, m5 = st.columns([2, 2, 2, 2, 1])
+    with m1:
+        map_awb = st.text_input("AWB *", placeholder="e.g. 100036186384", key="map_awb")
+    with m2:
+        map_so = st.text_input("SO # *", placeholder="e.g. NSO-MH/2026/0224", key="map_so")
+    with m3:
+        map_inv = st.text_input("Invoice # (optional)", placeholder="e.g. MH/26-27/0210", key="map_inv")
+    with m4:
+        map_po = st.text_input("PO Ref (optional)", placeholder="e.g. PO-12345", key="map_po")
+    with m5:
+        st.markdown("<br>", unsafe_allow_html=True)
+        save_clicked = st.button("💾 Save", key="map_save_btn", type="primary")
+
+    if save_clicked:
+        awb_val = map_awb.strip()
+        so_val  = map_so.strip()
+        if not awb_val:
+            st.error("AWB is required.")
+        elif not so_val:
+            st.error("SO # is required.")
+        else:
+            record = {"awb": awb_val, "so_number": so_val}
+            if map_inv.strip():
+                record["invoice_number"] = map_inv.strip()
+            if map_po.strip():
+                record["customer_po_ref"] = map_po.strip()
+            db.upsert_awb_so_mapping([record])
+            st.success(f"✅ Saved mapping: {awb_val} → {so_val}")
+            st.rerun()
+
+    st.markdown("---")
+
+    # ── Existing mappings ─────────────────────────────────────────────────
+    st.markdown("#### 📝 Saved Mappings")
+    mapping_df = db.load_awb_so_mapping()
+
+    if mapping_df.empty:
+        st.caption("No mappings saved yet.")
+    else:
+        display_cols = ["awb", "so_number", "invoice_number", "customer_po_ref"]
+        show_df = mapping_df[[c for c in display_cols if c in mapping_df.columns]].rename(columns={
+            "awb": "AWB", "so_number": "SO #",
+            "invoice_number": "Invoice #", "customer_po_ref": "PO Ref",
+        })
+        st.dataframe(show_df, use_container_width=True, hide_index=True, height=220)
+
+        # Delete
+        del_awb = st.selectbox(
+            "Delete mapping",
+            ["— select AWB —"] + list(mapping_df["awb"].tolist()),
+            key="map_del_sel",
+        )
+        if st.button("🗑️ Delete", key="map_del_btn") and del_awb != "— select AWB —":
+            db.delete_awb_so_mapping(del_awb)
+            st.success(f"Deleted mapping for {del_awb}")
+            st.rerun()
+
+    st.markdown("---")
+
+    # ── Apply all mappings → awb_view ─────────────────────────────────────
+    st.markdown("#### 🚀 Apply Mappings")
+    st.caption(
+        "Pushes all saved mappings into the main AWB tracker. "
+        "Safe to run multiple times — existing values are overwritten with the manual mapping."
+    )
+    if st.button("▶️ Apply All Mappings to AWB Tracker", type="primary", key="map_apply_btn"):
+        with st.spinner("Applying…"):
+            n = db.apply_manual_so_mapping()
+        if n == 0:
+            st.warning("No mappings to apply (table is empty or all patches are blank).")
+        else:
+            st.success(f"✅ Applied {n} mapping(s) to AWB tracker.")
+            _cached_load.clear()
+            time.sleep(1)
+            st.rerun()
+
+
+# ══════════════════════════════════════════════════════════════════════════
 # MAIN
 # ══════════════════════════════════════════════════════════════════════════
 
@@ -850,12 +965,13 @@ def main() -> None:
     sanity_label = f"🔍 Data Sanity ({total_issues})" if total_issues else "🔍 Data Sanity"
 
     # ── Tabs ──────────────────────────────────────────────────────────────
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "📦 Dashboard",
         "⬆️ Upload",
         "📊 Analytics",
         sanity_label,
         "⚙️ Settings",
+        "🔗 Manual Mapping",
     ])
 
     with tab1:
@@ -868,6 +984,8 @@ def main() -> None:
         tab_sanity(df)
     with tab5:
         tab_settings()
+    with tab6:
+        tab_manual_mapping(df)
 
 
 if __name__ == "__main__":
