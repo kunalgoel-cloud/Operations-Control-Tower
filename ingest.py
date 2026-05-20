@@ -490,11 +490,26 @@ def ingest_stuck_orders(df: pd.DataFrame) -> list[dict]:
             ])
         )
 
+        customer = str(
+            get(row, ["Customer Name", "Customer_Name", "customer"]) or ""
+        ).strip() or None
+
+        dispatch = parse_date(
+            get(row, ["Dispatch Date", "Dispatch_Date", "Dispatched Date"])
+        )
+
+        order_dt = parse_date(
+            get(row, ["Order Date", "Order_Date"])
+        )
+
         records.append({
-            "so_number": so,
-            "invoice_number": inv,
-            "customer_po_ref": po_ref,
+            "so_number":          so,
+            "invoice_number":     inv,
+            "customer_po_ref":    po_ref,
             "expected_ship_date": exp_ship,
+            "customer_name":      customer,
+            "dispatch_date":      dispatch,
+            "order_date":         order_dt,
         })
 
     return records
@@ -629,6 +644,10 @@ def apply_stuck_orders_to_db(stuck_records: list[dict]) -> tuple[int, int]:
     updated = 0
     chunk = 200
 
+    # Track which stuck records were resolved so Path C skips them
+    matched_inv_set: set[str] = set()
+    matched_so_set:  set[str] = set()
+
     # ── Path A: join via invoice_number ───────────────────────────────────────
     # WMS stores Channel Order Code ("MH/26-27/XXXX") as invoice_number.
     # Stuck Orders has that same value in inv_agg.Invoice Numbers.
@@ -682,6 +701,10 @@ def apply_stuck_orders_to_db(stuck_records: list[dict]) -> tuple[int, int]:
                 client.table("awb_view").upsert(updates, on_conflict="awb").execute()
                 updated += len(updates)
 
+            # Track which invoices were resolved
+            for row in rows:
+                matched_inv_set.add((row.get("invoice_number") or "").strip())
+
     # ── Path B: join via so_number ────────────────────────────────────────────
     # Covers AWBs where Courier MIS Reference Number = "NSO-MH/…" (SO format).
     # BUG FIX: use ORIGINAL case in the .in_() query (not .lower()) —
@@ -724,6 +747,100 @@ def apply_stuck_orders_to_db(stuck_records: list[dict]) -> tuple[int, int]:
             if updates:
                 client.table("awb_view").upsert(updates, on_conflict="awb").execute()
                 updated += len(updates)
+
+            # Track which SOs were resolved
+            for row in rows:
+                matched_so_set.add((row.get("so_number") or "").lower().strip())
+
+    # ── Path C: join via customer_name + dispatch_date (fallback) ─────────────
+    # For stuck records not matched by invoice or SO, try customer name +
+    # dispatch date proximity.  Uses customer_name / dispatch_date parsed
+    # from the stuck_orders file itself — safer than using WMS as an
+    # intermediary.  Only writes when exactly 1 awb_view record matches.
+    unmatched = [
+        r for r in stuck_records
+        if r.get("customer_name")
+        and (r.get("dispatch_date") or r.get("order_date"))
+        and (not r.get("invoice_number") or r["invoice_number"] not in matched_inv_set)
+        and (not r.get("so_number") or r["so_number"].lower() not in matched_so_set)
+    ]
+    if unmatched:
+        # Fetch all awb_view rows that still have no expected_ship_date in one shot
+        try:
+            mis_resp = (
+                client.table("awb_view")
+                .select("awb, customer_name, drop_state, dispatch_date")
+                .is_("expected_ship_date", "null")
+                .limit(5000)
+                .execute()
+            )
+            mis_pool = mis_resp.data or []
+        except Exception:
+            mis_pool = []
+
+        if mis_pool:
+            used_awbs: set[str] = set()
+            c_updates: list[dict] = []
+
+            for stuck in unmatched:
+                cust     = (stuck.get("customer_name") or "").strip()
+                ref_date = stuck.get("dispatch_date") or stuck.get("order_date")
+
+                first_word = ""
+                for token in re.split(r"[\s\-_/]+", cust):
+                    if token and token.lower() not in _COMPANY_SKIP and len(token) >= 3:
+                        first_word = token.upper()
+                        break
+                if not first_word or not ref_date:
+                    continue
+
+                try:
+                    ref_ts = pd.Timestamp(ref_date)
+                except Exception:
+                    continue
+
+                candidates = []
+                for mis in mis_pool:
+                    mis_awb = mis.get("awb") or ""
+                    if mis_awb in used_awbs:
+                        continue
+                    mis_cust = (mis.get("customer_name") or "").upper()
+                    if first_word not in mis_cust:
+                        continue
+                    mis_disp = mis.get("dispatch_date")
+                    if not mis_disp:
+                        continue
+                    try:
+                        if abs((pd.Timestamp(mis_disp) - ref_ts).days) > 5:
+                            continue
+                    except Exception:
+                        continue
+                    candidates.append(mis)
+
+                if len(candidates) != 1:
+                    continue  # ambiguous or no match — skip
+
+                mis_awb = candidates[0]["awb"]
+                used_awbs.add(mis_awb)
+                patch: dict[str, Any] = {"awb": mis_awb}
+                if stuck.get("invoice_number"):
+                    patch["invoice_number"] = stuck["invoice_number"]
+                if stuck.get("so_number"):
+                    patch["so_number"] = stuck["so_number"]
+                if stuck.get("customer_po_ref"):
+                    patch["customer_po_ref"] = stuck["customer_po_ref"]
+                if stuck.get("expected_ship_date"):
+                    patch["expected_ship_date"] = stuck["expected_ship_date"]
+                if len(patch) > 1:
+                    c_updates.append(patch)
+
+            if c_updates:
+                for i in range(0, len(c_updates), chunk):
+                    client.table("awb_view").upsert(
+                        c_updates[i : i + chunk], on_conflict="awb"
+                    ).execute()
+                matched += len(c_updates)
+                updated += len(c_updates)
 
     return matched, updated
 
