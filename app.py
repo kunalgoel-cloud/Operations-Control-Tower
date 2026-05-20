@@ -2,11 +2,11 @@
 app.py — Operations Control Tower (Streamlit)
 
 Tabs:
-  📦 Dashboard   — KPI cards, cohort panels, AWB tracker, variance by state
-  ⬆️ Upload      — CSV/Excel ingest with per-file result
-  📊 Analytics   — Trend charts, transporter scorecard, state heatmap
-  🔍 Data Sanity — Missing fields, cross-file consistency
-  ⚙️ Settings    — Appointment config management, reset, upload log
+  📦 Dashboard      — KPI filter pills + shipment tracker (sidebar filters)
+  ⬆️ Upload         — CSV/Excel ingest with per-file result
+  🔍 Data Sanity    — Missing fields, cross-file consistency
+  ⚙️ Settings       — Appointment config management, reset, upload log
+  🔗 Manual Mapping — Manual AWB→SO# for direct-booked shipments
 """
 
 import time
@@ -15,17 +15,16 @@ from datetime import date
 import pandas as pd
 import streamlit as st
 
-import charts
 import db
 import ingest
 import kpis
 import sanity
 
 
-# ── Cached-file wrapper (for re-running last upload) ───────────────────────
+# ── Cached-file wrapper ─────────────────────────────────────────────────────
 
 class _CachedFile:
-    """Minimal file-like object that re-presents stored bytes to process_uploaded_file."""
+    """Minimal file-like object that re-presents stored bytes."""
     def __init__(self, name: str, data: bytes):
         self.name = name
         self._data = data
@@ -33,122 +32,102 @@ class _CachedFile:
     def read(self) -> bytes:
         return self._data
 
-# ── Page config ────────────────────────────────────────────────────────────
+
+# ── Page config ─────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Operations Control Tower",
     page_icon="🏗️",
     layout="wide",
-    initial_sidebar_state="collapsed",
+    initial_sidebar_state="expanded",
 )
 
-# ── Global CSS ─────────────────────────────────────────────────────────────
+# ── Global CSS ───────────────────────────────────────────────────────────────
 st.markdown(
     """
 <style>
-/* Header */
+/* ── Sidebar ─────────────────────────────────────────────────────────────── */
+[data-testid="stSidebar"] {
+    background: #F8F9FA;
+    border-right: 1px solid #E8EAED;
+    padding-top: 8px;
+}
+[data-testid="stSidebar"] .block-container { padding-top: 12px; }
+
+/* ── Header ──────────────────────────────────────────────────────────────── */
 .oct-header {
     background: linear-gradient(135deg, #1A73E8, #0D47A1);
     color: white;
     padding: 14px 24px;
     border-radius: 10px;
-    margin-bottom: 16px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
+    margin-bottom: 14px;
 }
 .oct-header h1 { font-size: 20px; margin: 0; font-weight: 700; }
 .oct-header .sub { font-size: 11px; opacity: .75; margin-top: 2px; }
 
-/* KPI cards */
-.kpi-grid { display: grid; grid-template-columns: repeat(5,1fr); gap: 12px; margin-bottom: 16px; }
-.kpi-card {
-    background: white;
-    border-radius: 10px;
-    padding: 14px 16px;
-    box-shadow: 0 1px 4px rgba(0,0,0,.08);
-    border-left: 4px solid var(--kpi-color);
-}
-.kpi-value { font-size: 28px; font-weight: 700; color: var(--kpi-color); line-height: 1.1; }
-.kpi-label { font-size: 11px; color: #5F6368; font-weight: 500; margin-top: 2px; }
-
-/* Status badges */
-.badge {
-    display: inline-block;
-    padding: 2px 8px;
-    border-radius: 10px;
-    font-size: 10px;
-    font-weight: 700;
-    white-space: nowrap;
-}
-.badge-green  { background: #E6F4EA; color: #137333; }
-.badge-blue   { background: #E8F0FE; color: #1558D6; }
-.badge-red    { background: #FCE8E6; color: #C5221F; }
-.badge-orange { background: #FFF0E0; color: #B06000; }
-.badge-yellow { background: #FEF7E0; color: #AA8000; }
-.badge-grey   { background: #F1F3F4; color: #5F6368; }
-.badge-purple { background: #F3E8FD; color: #7B1FA2; }
-
-/* Section cards */
-.section-card {
-    background: white;
-    border-radius: 10px;
-    box-shadow: 0 1px 4px rgba(0,0,0,.08);
-    padding: 16px;
-    margin-bottom: 14px;
-}
-.section-title { font-size: 14px; font-weight: 600; margin-bottom: 10px; }
-
-/* Table tweaks */
-div[data-testid="stDataFrame"] table { font-size: 11px !important; }
-div[data-testid="stDataFrame"] th {
-    background: #F8F9FA !important;
+/* ── KPI pill buttons ────────────────────────────────────────────────────── */
+/* Target buttons inside the horizontal block that holds the pills */
+div[data-testid="stHorizontalBlock"] > div > div > div > .stButton > button {
+    border-radius: 22px !important;
+    font-size: 13px !important;
+    padding: 7px 10px !important;
     font-weight: 600 !important;
-    color: #5F6368 !important;
+    width: 100% !important;
+    transition: all .15s !important;
+    box-shadow: 0 1px 3px rgba(0,0,0,.07) !important;
+    line-height: 1.4 !important;
+}
+div[data-testid="stHorizontalBlock"] > div > div > div > .stButton > button[kind="secondary"] {
+    background: white !important;
+    border: 1.5px solid #E0E0E0 !important;
+    color: #3C4043 !important;
+}
+div[data-testid="stHorizontalBlock"] > div > div > div > .stButton > button[kind="secondary"]:hover {
+    border-color: #1A73E8 !important;
+    color: #1A73E8 !important;
+    background: #F4F8FF !important;
+}
+div[data-testid="stHorizontalBlock"] > div > div > div > .stButton > button[kind="primary"] {
+    background: #E8F0FE !important;
+    border: 2px solid #1A73E8 !important;
+    color: #1558D6 !important;
 }
 
-/* Compact metric */
+/* ── Status badges ───────────────────────────────────────────────────────── */
+.badge { display:inline-block; padding:2px 8px; border-radius:10px;
+         font-size:10px; font-weight:700; white-space:nowrap; }
+.badge-green  { background:#E6F4EA; color:#137333; }
+.badge-blue   { background:#E8F0FE; color:#1558D6; }
+.badge-red    { background:#FCE8E6; color:#C5221F; }
+.badge-orange { background:#FFF0E0; color:#B06000; }
+.badge-yellow { background:#FEF7E0; color:#AA8000; }
+.badge-grey   { background:#F1F3F4; color:#5F6368; }
+.badge-purple { background:#F3E8FD; color:#7B1FA2; }
+
+/* ── Table ───────────────────────────────────────────────────────────────── */
+div[data-testid="stDataFrame"] table { font-size:11px !important; }
+div[data-testid="stDataFrame"] th {
+    background:#F8F9FA !important;
+    font-weight:600 !important;
+    color:#5F6368 !important;
+}
+
+/* ── Metric ──────────────────────────────────────────────────────────────── */
 div[data-testid="metric-container"] {
     background: white;
     border-radius: 8px;
     padding: 10px 14px;
     box-shadow: 0 1px 4px rgba(0,0,0,.08);
 }
+
+/* ── Divider spacing ─────────────────────────────────────────────────────── */
+hr { margin: 10px 0 !important; }
 </style>
 """,
     unsafe_allow_html=True,
 )
 
 
-# ── Helpers ────────────────────────────────────────────────────────────────
-
-def status_badge(status: str) -> str:
-    s = (status or "").upper().strip()
-    if "DELIVER" in s and "UNDELIVER" not in s:
-        return '<span class="badge badge-green">Delivered</span>'
-    if "CANCEL" in s:
-        return '<span class="badge badge-red">Cancelled</span>'
-    if "UNDELIVER" in s or "FAIL" in s:
-        return '<span class="badge badge-yellow">Undelivered</span>'
-    if "OUT FOR" in s:
-        return '<span class="badge badge-blue">Out for Del</span>'
-    if "RTO" in s or "RETURN" in s:
-        return '<span class="badge badge-orange">RTO</span>'
-    if "MANIFEST" in s:
-        return '<span class="badge badge-grey">Manifested</span>'
-    if s in ("IN_TRANSIT", "IN TRANSIT", ""):
-        return '<span class="badge badge-blue">In Transit</span>'
-    return f'<span class="badge badge-grey">{status}</span>'
-
-
-def appt_badge(appt_status: str, appt_date: str = "") -> str:
-    if appt_status == "N" or appt_status == "delivered":
-        return "N"
-    if appt_status == "pending":
-        return '<span class="badge badge-red">Appt Pending</span>'
-    if appt_status == "scheduled":
-        return '<span class="badge badge-purple">✓ Scheduled</span>'
-    return "–"
-
+# ── Helpers ──────────────────────────────────────────────────────────────────
 
 def fmt_date(val) -> str:
     if val is None or (isinstance(val, float) and val != val):
@@ -162,16 +141,8 @@ def fmt_date(val) -> str:
         return "–"
 
 
-def var_cell(var_days: int, var_str: str) -> str:
-    if not var_str or var_str == "0d":
-        return "–"
-    color = "#C5221F" if var_days > 0 else "#137333"
-    return f'<span style="color:{color};font-weight:600">{var_str}</span>'
-
-
 @st.cache_data(ttl=120, show_spinner=False)
 def _cached_load():
-    """Load all data from Supabase with a 2-minute cache."""
     raw = db.load_awb_view()
     appt_config = db.load_appt_config()
     return raw, appt_config
@@ -188,161 +159,15 @@ def load_data(force: bool = False):
     return df, appt_config, kpi_vals
 
 
-# ── Render AWB table ───────────────────────────────────────────────────────
-
-_TABLE_COLS = [
-    ("so_number",               "SO #"),
-    ("customer_po_ref",         "PO Ref"),
-    ("invoice_number",          "Invoice #"),
-    ("awb",                     "AWB"),
-    ("customer_name",           "Customer"),
-    ("drop_city",               "City"),
-    ("drop_state",              "State"),
-    ("transporter",             "Transporter"),
-    ("order_date",              "Order Date"),
-    ("dispatch_date",           "Dispatch"),
-    ("days_old",                "Days Old"),
-    ("expected_ship_date",      "Exp Ship"),
-    ("status",                  "Status"),
-    ("delivery_date",           "Del Date"),
-    ("estimated_delivery_date", "EDD"),
-    ("var_str",                 "Variance"),
-    ("appt_status",             "Appt"),
-    ("appointment_date",        "Appt Date"),
-    ("pod_url",                 "POD"),
-    ("latest_remark",           "Latest Remark"),
-]
-
-
-def render_awb_table(df: pd.DataFrame, key_suffix: str = "main") -> None:
-    if df.empty:
-        st.info("No records to display.")
-        return
-
-    # Separate active and delivered
-    active   = df[~df["is_delivered"]].sort_values("days_old", ascending=False)
-    delivered = df[df["is_delivered"]].sort_values("days_old", ascending=False)
-
-    display_parts = [active, delivered]
-    combined = pd.concat(display_parts, ignore_index=True)
-
-    # Build display DF
-    display_rows = []
-    for _, row in combined.iterrows():
-        awb = row.get("awb", "")
-        url = row.get("track_url", "#")
-        is_del = row.get("is_delivered", False)
-
-        d_old = row.get("days_old", 0)
-        days_cell = f"**{d_old}**" if d_old > 14 and not is_del else str(d_old)
-
-        remark = str(row.get("latest_remark") or "")
-        remark_short = remark[:30] + "…" if len(remark) > 30 else remark
-
-        _pod_raw = row.get("pod_url")
-        _pod_str = "" if _pod_raw is None else str(_pod_raw).strip()
-        pod_cell = _pod_str if _pod_str.startswith("http") else ""
-
-        # AWB cell: plain URL so LinkColumn works; regex extracts AWB for display
-        # URL format: https://www.aftership.com/track?t=<AWB>&c=<carrier>
-        awb_cell = url if (awb and url and url.startswith("http")) else ""
-
-        display_rows.append({
-            "SO #":        row.get("so_number") or "–",
-            "PO Ref":      row.get("customer_po_ref") or "–",
-            "Invoice #":   row.get("invoice_number") or "–",
-            "AWB":         awb_cell,
-            "Customer":    row.get("customer_name") or "–",
-            "City":        row.get("drop_city") or "–",
-            "State":       row.get("drop_state") or "–",
-            "Transporter": row.get("transporter") or "–",
-            "Order Date":  fmt_date(row.get("order_date")),
-            "Dispatch":    fmt_date(row.get("dispatch_date")),
-            "Days Old":    days_cell,
-            "Exp Ship":    fmt_date(row.get("expected_ship_date")),
-            "Status":      row.get("status") or "–",
-            "Del Date":    fmt_date(row.get("delivery_date")),
-            "EDD":         fmt_date(row.get("estimated_delivery_date")),
-            "Variance":    row.get("var_str") or "–",
-            "Appt":        row.get("appt_status") or "–",
-            "Appt Date":   fmt_date(row.get("appointment_date")),
-            "POD":         pod_cell,
-            "Latest Remark": remark_short,
-        })
-
-    disp_df = pd.DataFrame(display_rows)
-
-    # Separator row between active and delivered
-    if not active.empty and not delivered.empty:
-        sep_idx = len(active)
-        # Streamlit doesn't allow true separator rows, so we show counts above
-        st.caption(
-            f"**{len(active)} active** shipments · "
-            f"**{len(delivered)} delivered** shipments (shown below separator)"
-        )
-
-    st.dataframe(
-        disp_df,
-        use_container_width=True,
-        hide_index=True,
-        height=480,
-        column_config={
-            # Regex extracts AWB number from ?t=<AWB>&c=<carrier>
-            "AWB": st.column_config.LinkColumn("AWB", display_text=r"[?&]t=([^&]+)"),
-            "POD": st.column_config.LinkColumn("POD", display_text="📄"),
-            "Days Old": st.column_config.TextColumn("Days Old"),
-        },
-    )
-
-    # CSV export
-    col1, col2 = st.columns([6, 1])
-    with col2:
-        csv_data = combined.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            label="⬇️ CSV",
-            data=csv_data,
-            file_name=f"OCT_{date.today().isoformat()}.csv",
-            mime="text/csv",
-            key=f"csv_{key_suffix}",
-        )
-
-
-# ── KPI card HTML ──────────────────────────────────────────────────────────
-
-def kpi_cards(kpi_vals: dict) -> None:
-    cards = [
-        ("total_active",    "📊", "Total Active",         "#1A73E8"),
-        ("stuck",           "🚨", "Stuck (14d+)",         "#EA4335"),
-        ("pending_appt",    "📋", "Pending Appointment",  "#F9AB00"),
-        ("delivered_today", "✅", "Delivered Today",      "#34A853"),
-        ("edd_breached",    "⏰", "EDD Breached",         "#FA7B17"),
-    ]
-    cols = st.columns(5)
-    for col, (key, icon, label, color) in zip(cols, cards):
-        val = kpi_vals.get(key, 0)
-        col.markdown(
-            f"""
-            <div class="kpi-card" style="--kpi-color:{color}">
-              <div style="font-size:20px">{icon}</div>
-              <div class="kpi-value">{val}</div>
-              <div class="kpi-label">{label}</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# TAB: DASHBOARD
-# ══════════════════════════════════════════════════════════════════════════
+# ── Time filter ──────────────────────────────────────────────────────────────
 
 _TIME_OPTIONS = {
-    "This Month":    0,
-    "Last 3 Months": 3,
-    "Last 6 Months": 6,
+    "This Month":     0,
+    "Last 3 Months":  3,
+    "Last 6 Months":  6,
     "Last 12 Months": 12,
-    "All Time":      None,
-    "Custom Range":  "custom",
+    "All Time":       None,
+    "Custom Range":   "custom",
 }
 
 
@@ -352,170 +177,150 @@ def _apply_time_filter(
     date_from: date | None = None,
     date_to: date | None = None,
 ) -> pd.DataFrame:
-    """
-    Filter df by dispatch_date.
-    Records with no dispatch_date are always kept.
-    """
     if df.empty or "dispatch_date" not in df.columns:
         return df
-
-    months = _TIME_OPTIONS.get(label)
     mask_no_date = df["dispatch_date"].isna()
 
     if label == "Custom Range":
         if date_from is None and date_to is None:
             return df
-        mask = mask_no_date
-        if date_from:
-            mask = mask | (df["dispatch_date"] >= pd.Timestamp(date_from))
-        if date_to:
-            mask = mask & (mask_no_date | (df["dispatch_date"] <= pd.Timestamp(date_to)))
-            # rebuild: no_date OR (within from AND within to)
-            lo = pd.Timestamp(date_from) if date_from else pd.Timestamp.min
-            hi = pd.Timestamp(date_to)   if date_to   else pd.Timestamp.max
-            mask = mask_no_date | (
-                (df["dispatch_date"] >= lo) & (df["dispatch_date"] <= hi)
-            )
-        return df[mask]
+        lo = pd.Timestamp(date_from) if date_from else pd.Timestamp.min
+        hi = pd.Timestamp(date_to)   if date_to   else pd.Timestamp.max
+        return df[mask_no_date | ((df["dispatch_date"] >= lo) & (df["dispatch_date"] <= hi))]
 
+    months = _TIME_OPTIONS.get(label)
     if months is None:
-        return df   # All Time
+        return df
 
     now = pd.Timestamp.now().normalize()
-    if months == 0:
-        cutoff = now.replace(day=1)
-    else:
-        cutoff = now.replace(day=1) - pd.DateOffset(months=months)
-
+    cutoff = now.replace(day=1) if months == 0 else now.replace(day=1) - pd.DateOffset(months=months)
     return df[mask_no_date | (df["dispatch_date"] >= cutoff)]
 
 
-def tab_dashboard(df: pd.DataFrame, kpi_vals: dict) -> None:
-    # ── Time window filter (gates the entire dashboard) ───────────────────
-    sel_col, from_col, to_col, _ = st.columns([2, 1.5, 1.5, 5])
+# ── Render AWB table ─────────────────────────────────────────────────────────
 
-    with sel_col:
-        time_sel = st.selectbox(
-            "📅 Dispatch Date Filter",
-            options=list(_TIME_OPTIONS.keys()),
-            index=1,          # default: Last 3 Months
-            key="time_window",
-        )
+def render_awb_table(df: pd.DataFrame, key_suffix: str = "main") -> None:
+    if df.empty:
+        st.info("No shipments match the current filters.")
+        return
 
-    date_from = date_to = None
-    if time_sel == "Custom Range":
-        today = date.today()
-        with from_col:
-            date_from = st.date_input("From", value=today.replace(day=1), key="custom_from")
-        with to_col:
-            date_to = st.date_input("To", value=today, key="custom_to")
+    active    = df[~df["is_delivered"]].sort_values("days_old", ascending=False)
+    delivered = df[df["is_delivered"]].sort_values("days_old", ascending=False)
+    combined  = pd.concat([active, delivered], ignore_index=True)
 
-    df = _apply_time_filter(df, time_sel, date_from, date_to)
-    # Recompute KPIs on the filtered slice
-    kpi_vals = kpis.compute_kpis(df) if not df.empty else {}
-
-    # ── KPI row ───────────────────────────────────────────────────────────
-    kpi_cards(kpi_vals)
-
-    # ── Cohort expanders ──────────────────────────────────────────────────
-    cohort_defs = [
-        ("🚨 Stuck Shipments (>14 days)",     "stuck",          kpis.cohort_stuck),
-        ("📋 Pending Appointments",            "appt",           kpis.cohort_pending_appt),
-        ("✅ Delivered Today",                  "delivered_today",kpis.cohort_delivered_today),
-        ("⏰ EDD Breached",                     "edd",            kpis.cohort_edd_breached),
-    ]
-    for title, key_sfx, cohort_fn in cohort_defs:
-        cohort_df = cohort_fn(df) if not df.empty else pd.DataFrame()
-        count = len(cohort_df)
-        with st.expander(f"{title}  ({count})", expanded=False):
-            render_awb_table(cohort_df, key_suffix=key_sfx)
-
-    # ── Filters ───────────────────────────────────────────────────────────
-    st.markdown("### 📦 Shipment Tracker")
-    f_col1, f_col2, f_col3, f_col4, f_col5 = st.columns([2, 2, 2, 2, 2])
-
-    with f_col1:
-        search_field = st.selectbox(
-            "Search by",
-            options=["awb", "so", "invoice", "customer"],
-            format_func=lambda x: {
-                "awb": "AWB", "so": "SO #",
-                "invoice": "Invoice #", "customer": "Customer",
-            }[x],
-            key="search_field",
-        )
-    with f_col2:
-        search_q = st.text_input("Search", placeholder="Type to filter…", key="search_q")
-
-    all_states      = sorted(df["drop_state"].dropna().unique()) if not df.empty else []
-    all_transporters = sorted(df["transporter"].dropna().unique()) if not df.empty else []
-    all_statuses    = sorted(df["status"].dropna().unique()) if not df.empty else []
-
-    with f_col3:
-        state_sel = st.multiselect("State", all_states,
-                                   default=all_states, key="state_sel")
-    with f_col4:
-        tp_sel = st.multiselect("Transporter", all_transporters,
-                                default=all_transporters, key="tp_sel")
-    with f_col5:
-        status_sel = st.multiselect("Status", all_statuses,
-                                    default=all_statuses, key="status_sel")
-
-    # Apply filters
-    filtered = df.copy() if not df.empty else pd.DataFrame()
-    if not filtered.empty:
-        if state_sel and set(state_sel) != set(all_states):
-            filtered = filtered[filtered["drop_state"].isin(state_sel)]
-        if tp_sel:
-            filtered = filtered[filtered["transporter"].isin(tp_sel)]
-        if status_sel and set(status_sel) != set(all_statuses):
-            filtered = filtered[filtered["status"].isin(status_sel)]
-        if search_q.strip():
-            q = search_q.strip().lower()
-            col_map = {
-                "awb": "awb", "so": "so_number",
-                "invoice": "invoice_number", "customer": "customer_name",
-            }
-            col = col_map.get(search_field, "awb")
-            filtered = filtered[
-                filtered[col].fillna("").str.lower().str.contains(q, regex=False)
-            ]
-
-    render_awb_table(filtered, key_suffix="main")
-
-    # ── Variance by state ─────────────────────────────────────────────────
-    st.markdown("### 📍 Delivery Variance by State")
-    var_df = kpis.variance_by_state(
-        df[df["drop_state"].isin(state_sel)]
-        if (state_sel and set(state_sel) != set(all_states))
-        else df
-    ) if not df.empty else pd.DataFrame()
-
-    if not var_df.empty:
-        # Colour Avg Var column
-        def colour_var(val):
-            try:
-                v = float(val)
-                if v > 0:
-                    return "color: #C5221F; font-weight: 600"
-                if v < 0:
-                    return "color: #137333; font-weight: 600"
-            except Exception:
-                pass
-            return "color: #9AA0A6"
-
-        styled = var_df.style.map(colour_var, subset=["Avg Var (d)"])
-        st.dataframe(styled, use_container_width=True, hide_index=True, height=300)
+    if not active.empty and not delivered.empty:
+        st.caption(f"{len(active)} active · {len(delivered)} delivered")
     else:
-        st.info("No variance data yet — upload a Courier MIS file.")
+        st.caption(f"{len(combined)} shipments")
+
+    display_rows = []
+    for _, row in combined.iterrows():
+        awb    = row.get("awb", "")
+        url    = row.get("track_url", "#")
+        is_del = row.get("is_delivered", False)
+        d_old  = row.get("days_old", 0)
+        days_cell = f"**{d_old}**" if d_old > 14 and not is_del else str(d_old)
+
+        remark = str(row.get("latest_remark") or "")
+        remark_short = remark[:30] + "…" if len(remark) > 30 else remark
+
+        _pod_raw = row.get("pod_url")
+        pod_cell = str(_pod_raw).strip() if _pod_raw and str(_pod_raw).startswith("http") else ""
+        awb_cell = url if (awb and url and url.startswith("http")) else ""
+
+        display_rows.append({
+            "SO #":          row.get("so_number") or "–",
+            "PO Ref":        row.get("customer_po_ref") or "–",
+            "Invoice #":     row.get("invoice_number") or "–",
+            "AWB":           awb_cell,
+            "Customer":      row.get("customer_name") or "–",
+            "City":          row.get("drop_city") or "–",
+            "State":         row.get("drop_state") or "–",
+            "Transporter":   row.get("transporter") or "–",
+            "Order Date":    fmt_date(row.get("order_date")),
+            "Dispatch":      fmt_date(row.get("dispatch_date")),
+            "Days Old":      days_cell,
+            "Exp Ship":      fmt_date(row.get("expected_ship_date")),
+            "Status":        row.get("status") or "–",
+            "Del Date":      fmt_date(row.get("delivery_date")),
+            "EDD":           fmt_date(row.get("estimated_delivery_date")),
+            "Variance":      row.get("var_str") or "–",
+            "Appt":          row.get("appt_status") or "–",
+            "Appt Date":     fmt_date(row.get("appointment_date")),
+            "POD":           pod_cell,
+            "Latest Remark": remark_short,
+        })
+
+    disp_df = pd.DataFrame(display_rows)
+
+    st.dataframe(
+        disp_df,
+        use_container_width=True,
+        hide_index=True,
+        height=540,
+        column_config={
+            "AWB":      st.column_config.LinkColumn("AWB", display_text=r"[?&]t=([^&]+)"),
+            "POD":      st.column_config.LinkColumn("POD", display_text="📄"),
+            "Days Old": st.column_config.TextColumn("Days Old"),
+        },
+    )
 
 
-# ══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB: DASHBOARD
+# ══════════════════════════════════════════════════════════════════════════════
+
+def tab_dashboard(filtered: pd.DataFrame, kpi_vals: dict) -> None:
+    """KPI filter pills → shipment tracker. No expanders, no variance table."""
+
+    # ── KPI state ─────────────────────────────────────────────────────────
+    if "active_kpi" not in st.session_state:
+        st.session_state["active_kpi"] = "all"
+
+    kpi_defs = [
+        ("all",       "All",              None,                         kpi_vals.get("total_active",    0)),
+        ("stuck",     "🚨 Stuck 14d+",    kpis.cohort_stuck,            kpi_vals.get("stuck",           0)),
+        ("appt",      "📋 Pending Appt",  kpis.cohort_pending_appt,     kpi_vals.get("pending_appt",    0)),
+        ("delivered", "✅ Delivered Today", kpis.cohort_delivered_today, kpi_vals.get("delivered_today", 0)),
+        ("edd",       "⏰ EDD Breached",   kpis.cohort_edd_breached,     kpi_vals.get("edd_breached",    0)),
+    ]
+
+    active_key = st.session_state.get("active_kpi", "all")
+
+    # ── Render pill row ───────────────────────────────────────────────────
+    pill_cols = st.columns(len(kpi_defs))
+    for col, (key, label, _, count) in zip(pill_cols, kpi_defs):
+        with col:
+            if st.button(
+                f"{label}  ·  {count}",
+                key=f"kpi_{key}",
+                use_container_width=True,
+                type="primary" if active_key == key else "secondary",
+            ):
+                st.session_state["active_kpi"] = key
+                st.rerun()
+
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+
+    # ── Apply KPI cohort filter ───────────────────────────────────────────
+    fn_map = {
+        "all":       None,
+        "stuck":     kpis.cohort_stuck,
+        "appt":      kpis.cohort_pending_appt,
+        "delivered": kpis.cohort_delivered_today,
+        "edd":       kpis.cohort_edd_breached,
+    }
+    fn = fn_map.get(active_key)
+    table_df = fn(filtered) if (fn is not None and not filtered.empty) else filtered
+
+    render_awb_table(table_df, key_suffix="dashboard")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # TAB: UPLOAD
-# ══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 
 def _run_ingest(file_objects: list) -> None:
-    """Shared ingest runner used by both the uploader and the re-run button."""
     results = []
     progress = st.progress(0)
     for i, uf in enumerate(file_objects):
@@ -525,15 +330,13 @@ def _run_ingest(file_objects: list) -> None:
         progress.progress((i + 1) / len(file_objects))
 
     progress.empty()
-
     st.markdown("#### Results")
     all_ok = True
     for r in results:
         if r.ok:
             st.success(
                 f"✅ **{r.filename}** ({r.file_type}) — "
-                f"{r.rows_processed} rows processed · "
-                f"{r.rows_inserted} inserted · {r.rows_updated} updated"
+                f"{r.rows_processed} rows · {r.rows_inserted} inserted · {r.rows_updated} updated"
             )
         else:
             all_ok = False
@@ -554,8 +357,7 @@ def tab_upload() -> None:
         "Appointment Config  |  **Formats:** CSV, Excel (.xlsx / .xls)"
     )
 
-    # ── Re-run last ingest ────────────────────────────────────────────────
-    cached = st.session_state.get("last_upload_cache")  # list of {name, data}
+    cached = st.session_state.get("last_upload_cache")
     if cached:
         cached_names = ", ".join(c["name"] for c in cached)
         st.info(f"**Last ingested:** {cached_names}")
@@ -566,7 +368,6 @@ def tab_upload() -> None:
 
     st.markdown("---")
 
-    # ── New upload ────────────────────────────────────────────────────────
     uploaded = st.file_uploader(
         "Drop files here or click to browse",
         type=["csv", "xlsx", "xls"],
@@ -579,81 +380,29 @@ def tab_upload() -> None:
         return
 
     st.markdown(f"**{len(uploaded)} file(s) ready**")
-
     if st.button("🚀 Ingest All Files", type="primary"):
-        # Cache raw bytes before reading (read() is consumed during ingest)
         file_cache = []
         file_objects = []
         for uf in uploaded:
             raw = uf.read()
             file_cache.append({"name": uf.name, "data": raw})
             file_objects.append(_CachedFile(uf.name, raw))
-
         st.session_state["last_upload_cache"] = file_cache
         _run_ingest(file_objects)
 
 
-# ══════════════════════════════════════════════════════════════════════════
-# TAB: ANALYTICS
-# ══════════════════════════════════════════════════════════════════════════
-
-def tab_analytics(df: pd.DataFrame) -> None:
-    st.markdown("### 📊 Analytics")
-
-    if df.empty:
-        st.info("Upload data to see analytics.")
-        return
-
-    # Load full dataset including CANCELLED for complete analytics
-    @st.cache_data(ttl=120, show_spinner=False)
-    def _load_full():
-        return db.load_all_awb_raw()
-
-    full_df = _load_full()
-
-    days = st.slider("Time window (days)", 7, 90, 30, step=7, key="analytics_days")
-
-    # Row 1: Daily delivered + On-time trend
-    col1, col2 = st.columns(2)
-    with col1:
-        st.plotly_chart(
-            charts.chart_daily_delivered(full_df, days=days),
-            use_container_width=True,
-        )
-    with col2:
-        weeks = max(4, days // 7)
-        st.plotly_chart(
-            charts.chart_ontime_trend(full_df, weeks=weeks),
-            use_container_width=True,
-        )
-
-    # Row 2: Status mix + Transporter scorecard
-    col3, col4 = st.columns(2)
-    with col3:
-        st.plotly_chart(charts.chart_status_mix(full_df), use_container_width=True)
-    with col4:
-        st.plotly_chart(
-            charts.chart_transporter_scorecard(full_df), use_container_width=True
-        )
-
-    # Row 3: State heatmap (full width)
-    st.plotly_chart(charts.chart_state_heatmap(full_df), use_container_width=True)
-
-
-# ══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 # TAB: DATA SANITY
-# ══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 
 def tab_sanity(df: pd.DataFrame) -> None:
     st.markdown("### 🔍 Data Sanity Checks")
-
     if df.empty:
         st.info("No data loaded. Upload files first.")
         return
 
     col_left, col_right = st.columns(2)
 
-    # ── Missing critical fields ───────────────────────────────────────────
     with col_left:
         st.markdown("#### Missing Critical Fields")
         st.caption(
@@ -665,70 +414,34 @@ def tab_sanity(df: pd.DataFrame) -> None:
             st.success("✅ No missing critical fields found.")
         else:
             st.warning(f"⚠️ {len(missing_df)} AWBs have missing critical fields")
-            st.dataframe(
-                missing_df,
-                use_container_width=True,
-                hide_index=True,
-                height=350,
-            )
-            csv = missing_df.to_csv(index=False).encode("utf-8")
-            st.download_button(
-                "⬇️ Export Missing Fields",
-                data=csv,
-                file_name=f"OCT_missing_fields_{date.today().isoformat()}.csv",
-                mime="text/csv",
-                key="dl_missing",
-            )
+            st.dataframe(missing_df, use_container_width=True, hide_index=True, height=350)
 
-    # ── Cross-file consistency ────────────────────────────────────────────
     with col_right:
         st.markdown("#### Cross-File Consistency")
         age_threshold = st.number_input(
             "Flag AWBs dispatched >N days ago with no Courier MIS status",
-            min_value=1, max_value=30, value=3, step=1,
-            key="cross_age",
+            min_value=1, max_value=30, value=3, step=1, key="cross_age",
         )
         st.caption(
-            "These AWBs appear in WMS Dispatch but Courier MIS has never "
-            "reported a status for them. Possible causes: AWB not found by courier, "
-            "Courier MIS not yet uploaded, or wrong AWB in WMS."
+            "AWBs in WMS Dispatch but Courier MIS has never reported a status."
         )
-        cross_df = sanity.check_cross_file_consistency(
-            df, min_dispatch_age_days=int(age_threshold)
-        )
+        cross_df = sanity.check_cross_file_consistency(df, min_dispatch_age_days=int(age_threshold))
         if cross_df.empty:
             st.success("✅ No cross-file consistency issues found.")
         else:
             st.warning(f"⚠️ {len(cross_df)} AWBs dispatched but missing from Courier MIS")
-            st.dataframe(
-                cross_df,
-                use_container_width=True,
-                hide_index=True,
-                height=350,
-            )
-            csv = cross_df.to_csv(index=False).encode("utf-8")
-            st.download_button(
-                "⬇️ Export Consistency Issues",
-                data=csv,
-                file_name=f"OCT_cross_file_{date.today().isoformat()}.csv",
-                mime="text/csv",
-                key="dl_cross",
-            )
+            st.dataframe(cross_df, use_container_width=True, hide_index=True, height=350)
 
 
-# ══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 # TAB: SETTINGS
-# ══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 
 def tab_settings() -> None:
     st.markdown("### ⚙️ Settings")
 
-    # ── Appointment Config ────────────────────────────────────────────────
     with st.expander("📋 Appointment Config", expanded=True):
-        st.markdown(
-            "Define which customers require a delivery appointment. "
-            "This overrides the Appointment_Required column from Courier MIS."
-        )
+        st.markdown("Define which customers require a delivery appointment.")
         appt_cfg = db.load_appt_config()
         if appt_cfg:
             appt_display = pd.DataFrame([
@@ -765,16 +478,16 @@ def tab_settings() -> None:
                 st.success(f"Deleted: {del_cust}")
                 st.rerun()
 
-    # ── Upload Log ────────────────────────────────────────────────────────
     with st.expander("📜 Upload History", expanded=False):
         log_df = db.load_upload_log(50)
         if log_df.empty:
             st.caption("No uploads recorded yet.")
         else:
             if "uploaded_at" in log_df.columns:
-                log_df["uploaded_at"] = pd.to_datetime(
-                    log_df["uploaded_at"], errors="coerce"
-                ).dt.strftime("%d %b %y %H:%M")
+                log_df["uploaded_at"] = (
+                    pd.to_datetime(log_df["uploaded_at"], errors="coerce")
+                    .dt.strftime("%d %b %y %H:%M")
+                )
             st.dataframe(
                 log_df[[
                     "uploaded_at", "filename", "file_type",
@@ -790,22 +503,12 @@ def tab_settings() -> None:
                     "upload_status":  "Status",
                     "error_message":  "Error",
                 }),
-                use_container_width=True,
-                hide_index=True,
-                height=300,
+                use_container_width=True, hide_index=True, height=300,
             )
 
-    # ── Reset / Danger Zone ───────────────────────────────────────────────
     with st.expander("🔄 Reset / Danger Zone", expanded=False):
-        st.warning(
-            "**Reset AWB View** deletes ALL shipment records. "
-            "Re-upload your CSV/Excel files afterwards."
-        )
-        confirm = st.text_input(
-            'Type "RESET" to confirm',
-            placeholder="RESET",
-            key="reset_confirm",
-        )
+        st.warning("**Reset AWB View** deletes ALL shipment records. Re-upload your files afterwards.")
+        confirm = st.text_input('Type "RESET" to confirm', placeholder="RESET", key="reset_confirm")
         if st.button("🔄 Reset AWB View", type="secondary", key="reset_btn"):
             if confirm.strip().upper() == "RESET":
                 db.reset_awb_view()
@@ -817,9 +520,9 @@ def tab_settings() -> None:
                 st.error('Please type "RESET" to confirm.')
 
 
-# ══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 # TAB: MANUAL SO MAPPING
-# ══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 
 def tab_manual_mapping(df: pd.DataFrame) -> None:
     st.markdown("### 🔗 Manual SO Mapping")
@@ -829,7 +532,6 @@ def tab_manual_mapping(df: pd.DataFrame) -> None:
         "Click **Apply** to push the values into the main AWB tracker."
     )
 
-    # ── Gate: check table exists ──────────────────────────────────────────
     if not db._mapping_table_exists():
         st.error(
             "**Setup required:** the `awb_so_mapping` table does not exist yet in Supabase.\n\n"
@@ -849,15 +551,16 @@ def tab_manual_mapping(df: pd.DataFrame) -> None:
         )
         return
 
-    # ── Candidate AWBs (no SO# yet) ───────────────────────────────────────
     with st.expander("📋 AWBs with no SO# (candidates)", expanded=True):
         if df.empty:
             st.info("No data loaded yet.")
         else:
             no_so = df[
-                df["so_number"].isna() | (df["so_number"].str.strip() == "–") | (df["so_number"].str.strip() == "")
-            ][["awb", "customer_name", "drop_city", "drop_state", "transporter",
-               "dispatch_date", "status"]].copy()
+                df["so_number"].isna()
+                | (df["so_number"].str.strip() == "–")
+                | (df["so_number"].str.strip() == "")
+            ][["awb", "customer_name", "drop_city", "drop_state",
+               "transporter", "dispatch_date", "status"]].copy()
             no_so["dispatch_date"] = no_so["dispatch_date"].apply(fmt_date)
             no_so = no_so.rename(columns={
                 "awb": "AWB", "customer_name": "Customer",
@@ -872,8 +575,6 @@ def tab_manual_mapping(df: pd.DataFrame) -> None:
                 st.dataframe(no_so, use_container_width=True, hide_index=True, height=260)
 
     st.markdown("---")
-
-    # ── Add new mapping ───────────────────────────────────────────────────
     st.markdown("#### ➕ Add / Update Mapping")
     m1, m2, m3, m4, m5 = st.columns([2, 2, 2, 2, 1])
     with m1:
@@ -906,8 +607,6 @@ def tab_manual_mapping(df: pd.DataFrame) -> None:
             st.rerun()
 
     st.markdown("---")
-
-    # ── Existing mappings ─────────────────────────────────────────────────
     st.markdown("#### 📝 Saved Mappings")
     mapping_df = db.load_awb_so_mapping()
 
@@ -921,7 +620,6 @@ def tab_manual_mapping(df: pd.DataFrame) -> None:
         })
         st.dataframe(show_df, use_container_width=True, hide_index=True, height=220)
 
-        # Delete
         del_awb = st.selectbox(
             "Delete mapping",
             ["— select AWB —"] + list(mapping_df["awb"].tolist()),
@@ -933,12 +631,10 @@ def tab_manual_mapping(df: pd.DataFrame) -> None:
             st.rerun()
 
     st.markdown("---")
-
-    # ── Apply all mappings → awb_view ─────────────────────────────────────
     st.markdown("#### 🚀 Apply Mappings")
     st.caption(
-        "Pushes all saved mappings into the main AWB tracker. "
-        "Safe to run multiple times — existing values are overwritten with the manual mapping."
+        "Pushes all saved mappings into the main AWB tracker, including Exp Ship "
+        "from the last Stuck Orders upload. Safe to run multiple times."
     )
     if st.button("▶️ Apply All Mappings to AWB Tracker", type="primary", key="map_apply_btn"):
         with st.spinner("Applying…"):
@@ -952,13 +648,14 @@ def tab_manual_mapping(df: pd.DataFrame) -> None:
             st.rerun()
 
 
-# ══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 # MAIN
-# ══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 
 def main() -> None:
-    # ── Header ────────────────────────────────────────────────────────────
     now_str = pd.Timestamp.now().strftime("%d %b %Y %H:%M")
+
+    # ── Header ────────────────────────────────────────────────────────────
     st.markdown(
         f"""
         <div class="oct-header">
@@ -975,9 +672,104 @@ def main() -> None:
     with st.spinner("Loading data…"):
         df, appt_config, kpi_vals = load_data()
 
-    # Sanity badge for tab label
+    # ── Sidebar — Part 1: time + search (no data dependency) ─────────────
+    with st.sidebar:
+        st.markdown("## 🏗️ OCT")
+        st.caption(f"Refreshed {now_str}")
+
+        if st.button("🔄 Refresh", use_container_width=True, key="sidebar_refresh"):
+            load_data(force=True)
+            st.rerun()
+
+        st.divider()
+
+        st.markdown("**📅 Time Window**")
+        time_sel = st.selectbox(
+            "_tw",
+            options=list(_TIME_OPTIONS.keys()),
+            index=1,
+            key="time_window",
+            label_visibility="collapsed",
+        )
+        date_from = date_to = None
+        if time_sel == "Custom Range":
+            today = date.today()
+            date_from = st.date_input("From", value=today.replace(day=1), key="custom_from")
+            date_to   = st.date_input("To",   value=today,                key="custom_to")
+
+        st.divider()
+
+        st.markdown("**🔍 Search**")
+        search_field = st.selectbox(
+            "_sf",
+            options=["awb", "so", "invoice", "customer"],
+            format_func=lambda x: {
+                "awb": "AWB", "so": "SO #",
+                "invoice": "Invoice #", "customer": "Customer",
+            }[x],
+            key="search_field",
+            label_visibility="collapsed",
+        )
+        search_q = st.text_input(
+            "_sq",
+            placeholder="Type to filter…",
+            key="search_q",
+            label_visibility="collapsed",
+        )
+
+    # ── Apply time filter ─────────────────────────────────────────────────
+    df = _apply_time_filter(df, time_sel, date_from, date_to)
+    kpi_vals = kpis.compute_kpis(df) if not df.empty else {}
+
+    # ── Sidebar — Part 2: dimension filters (need time-filtered df) ───────
+    all_states       = sorted(df["drop_state"].dropna().unique().tolist())  if not df.empty else []
+    all_transporters = sorted(df["transporter"].dropna().unique().tolist()) if not df.empty else []
+    all_statuses     = sorted(df["status"].dropna().unique().tolist())      if not df.empty else []
+
+    with st.sidebar:
+        st.divider()
+
+        st.markdown("**📍 State**")
+        state_sel = st.multiselect(
+            "_s", all_states, default=all_states, key="state_sel",
+            label_visibility="collapsed",
+        )
+
+        st.markdown("**🚛 Transporter**")
+        tp_sel = st.multiselect(
+            "_t", all_transporters, default=all_transporters, key="tp_sel",
+            label_visibility="collapsed",
+        )
+
+        st.markdown("**📊 Status**")
+        status_sel = st.multiselect(
+            "_st", all_statuses, default=all_statuses, key="status_sel",
+            label_visibility="collapsed",
+        )
+
+    # ── Apply dimension + search filters ─────────────────────────────────
+    filtered = df.copy() if not df.empty else pd.DataFrame()
+    if not filtered.empty:
+        if state_sel and set(state_sel) != set(all_states):
+            filtered = filtered[filtered["drop_state"].isin(state_sel)]
+        if tp_sel and set(tp_sel) != set(all_transporters):
+            filtered = filtered[filtered["transporter"].isin(tp_sel)]
+        if status_sel and set(status_sel) != set(all_statuses):
+            filtered = filtered[filtered["status"].isin(status_sel)]
+        if search_q.strip():
+            q = search_q.strip().lower()
+            col_map = {
+                "awb": "awb", "so": "so_number",
+                "invoice": "invoice_number", "customer": "customer_name",
+            }
+            col = col_map.get(search_field, "awb")
+            filtered = filtered[
+                filtered[col].fillna("").str.lower().str.contains(q, regex=False)
+            ]
+
+    # ── Tab labels ────────────────────────────────────────────────────────
     sanity_counts = sanity.sanity_summary(df) if not df.empty else {
-        "missing_fields_count": 0, "cross_file_count": 0
+        "missing_fields_count": 0, "cross_file_count": 0,
     }
     total_issues = (
         sanity_counts["missing_fields_count"] + sanity_counts["cross_file_count"]
@@ -985,26 +777,23 @@ def main() -> None:
     sanity_label = f"🔍 Data Sanity ({total_issues})" if total_issues else "🔍 Data Sanity"
 
     # ── Tabs ──────────────────────────────────────────────────────────────
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "📦 Dashboard",
         "⬆️ Upload",
-        "📊 Analytics",
         sanity_label,
         "⚙️ Settings",
         "🔗 Manual Mapping",
     ])
 
     with tab1:
-        tab_dashboard(df, kpi_vals)
+        tab_dashboard(filtered, kpi_vals)
     with tab2:
         tab_upload()
     with tab3:
-        tab_analytics(df)
-    with tab4:
         tab_sanity(df)
-    with tab5:
+    with tab4:
         tab_settings()
-    with tab6:
+    with tab5:
         tab_manual_mapping(df)
 
 
