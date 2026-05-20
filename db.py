@@ -398,6 +398,73 @@ def log_upload(
     }).execute()
 
 
+# ── Manual SO Mapping ─────────────────────────────────────────────────────
+# Fallback (Path D) for AWBs booked directly on the courier portal that have
+# no WMS row — no automated bridge to Stuck Orders exists for them.
+# Users enter AWB → SO# manually; Apply pushes them into awb_view.
+
+def load_awb_so_mapping() -> pd.DataFrame:
+    """Return all rows from awb_so_mapping as a DataFrame."""
+    client = get_client()
+    resp = (
+        client.table("awb_so_mapping")
+        .select("*")
+        .order("created_at", desc=True)
+        .execute()
+    )
+    return pd.DataFrame(resp.data) if resp.data else pd.DataFrame()
+
+
+def upsert_awb_so_mapping(records: list[dict]) -> int:
+    """Save manual AWB→SO mappings. Returns count written."""
+    if not records:
+        return 0
+    client = get_client()
+    client.table("awb_so_mapping").upsert(records, on_conflict="awb").execute()
+    return len(records)
+
+
+def delete_awb_so_mapping(awb: str) -> None:
+    client = get_client()
+    client.table("awb_so_mapping").delete().eq("awb", awb).execute()
+
+
+def apply_manual_so_mapping() -> int:
+    """
+    Read all awb_so_mapping rows and write so_number / invoice_number /
+    customer_po_ref into awb_view (manual override — always wins).
+    Returns number of awb_view rows patched.
+    """
+    client = get_client()
+    resp = client.table("awb_so_mapping").select("*").execute()
+    mappings = resp.data or []
+    if not mappings:
+        return 0
+
+    updates: list[dict] = []
+    for m in mappings:
+        patch: dict = {"awb": m["awb"]}
+        if m.get("so_number"):
+            patch["so_number"] = m["so_number"]
+        if m.get("invoice_number"):
+            patch["invoice_number"] = m["invoice_number"]
+        if m.get("customer_po_ref"):
+            patch["customer_po_ref"] = m["customer_po_ref"]
+        if len(patch) > 1:
+            updates.append(patch)
+
+    if not updates:
+        return 0
+
+    chunk = 200
+    for i in range(0, len(updates), chunk):
+        client.table("awb_view").upsert(
+            updates[i : i + chunk], on_conflict="awb"
+        ).execute()
+
+    return len(updates)
+
+
 # ── Reset ──────────────────────────────────────────────────────────────────
 
 def reset_awb_view() -> None:
