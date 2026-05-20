@@ -336,7 +336,59 @@ def kpi_cards(kpi_vals: dict) -> None:
 # TAB: DASHBOARD
 # ══════════════════════════════════════════════════════════════════════════
 
+_TIME_OPTIONS = {
+    "This Month":    0,    # current calendar month
+    "Last 3 Months": 3,
+    "Last 6 Months": 6,
+    "Last 12 Months": 12,
+    "All Time":      None,
+}
+
+
+def _apply_time_filter(df: pd.DataFrame, label: str) -> pd.DataFrame:
+    """
+    Filter df by dispatch_date based on the selected time window label.
+    Records with no dispatch_date are always kept (active with no date info).
+    """
+    if df.empty:
+        return df
+    months = _TIME_OPTIONS.get(label)
+    if months is None:
+        return df   # All Time — no filter
+
+    now = pd.Timestamp.now().normalize()
+    if months == 0:
+        # Current calendar month: from the 1st of this month
+        cutoff = now.replace(day=1)
+    else:
+        # N calendar months back from the 1st of this month
+        first_of_this = now.replace(day=1)
+        cutoff = first_of_this - pd.DateOffset(months=months)
+
+    col = "dispatch_date"
+    if col not in df.columns:
+        return df
+
+    mask_no_date  = df[col].isna()
+    mask_in_window = df[col] >= cutoff
+    return df[mask_no_date | mask_in_window]
+
+
 def tab_dashboard(df: pd.DataFrame, kpi_vals: dict) -> None:
+    # ── Time window filter (gates the entire dashboard) ───────────────────
+    tw_col, _ = st.columns([2, 8])
+    with tw_col:
+        time_sel = st.selectbox(
+            "📅 Time Window",
+            options=list(_TIME_OPTIONS.keys()),
+            index=1,          # default: Last 3 Months
+            key="time_window",
+        )
+
+    df = _apply_time_filter(df, time_sel)
+    # Recompute KPIs on the filtered slice
+    kpi_vals = kpis.compute_kpis(df) if not df.empty else {}
+
     # ── KPI row ───────────────────────────────────────────────────────────
     kpi_cards(kpi_vals)
 
