@@ -204,6 +204,16 @@ def read_file(uploaded_file) -> pd.DataFrame:
         )
 
 
+# ── Transporters to exclude from B2B ingest ──────────────────────────────
+# AWBs for these carriers are excluded at ingest time and never written to DB.
+_SKIP_TRANSPORTERS = {"delhivery"}   # lowercase; add more as needed
+
+
+def _is_skipped_transporter(name: str) -> bool:
+    n = (name or "").lower().strip()
+    return any(skip in n for skip in _SKIP_TRANSPORTERS)
+
+
 # ── Ingest: WMS Dispatch ───────────────────────────────────────────────────
 
 def ingest_wms(df: pd.DataFrame) -> list[dict]:
@@ -220,6 +230,9 @@ def ingest_wms(df: pd.DataFrame) -> list[dict]:
 
         wms_raw_st = str(get(row, ["Status"]) or "").upper()
         wms_tp = str(get(row, ["Shipper"]) or "").upper()
+
+        if _is_skipped_transporter(wms_tp):
+            continue
 
         is_self_pickup = (
             "PORTER" in wms_tp
@@ -323,6 +336,16 @@ def ingest_courier_mis(df: pd.DataFrame) -> list[dict]:
             ])
         )
         if not awb or not is_valid_awb(awb):
+            continue
+
+        # Skip excluded transporters (e.g. Delhivery B2B)
+        mis_tp = str(
+            get(row, [
+                "Courier Partner", "Carrier", "Logistics Partner",
+                "Courier Name", "Service Provider",
+            ]) or ""
+        )
+        if _is_skipped_transporter(mis_tp):
             continue
 
         raw_st = str(
