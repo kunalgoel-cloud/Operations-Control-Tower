@@ -727,7 +727,7 @@ def main() -> None:
     with st.spinner("Loading data…"):
         df, appt_config, kpi_vals = load_data()
 
-    # ── Sidebar — Part 1: time + search (no data dependency) ─────────────
+    # ── Sidebar — Part 1: time window only ───────────────────────────────
     with st.sidebar:
         st.markdown("## 🏗️ OCT")
         st.caption(f"Refreshed {now_str}")
@@ -752,36 +752,60 @@ def main() -> None:
             date_from = st.date_input("From", value=today.replace(day=1), key="custom_from")
             date_to   = st.date_input("To",   value=today,                key="custom_to")
 
+    # ── Apply time filter ─────────────────────────────────────────────────
+    df = _apply_time_filter(df, time_sel, date_from, date_to)
+    kpi_vals = kpis.compute_kpis(df) if not df.empty else {}
+
+    # ── Build unique option lists from time-filtered data ─────────────────
+    all_states       = sorted(df["drop_state"].dropna().unique().tolist())  if not df.empty else []
+    all_transporters = sorted(df["transporter"].dropna().unique().tolist()) if not df.empty else []
+    all_statuses     = sorted(df["status"].dropna().unique().tolist())      if not df.empty else []
+
+    _search_col_map = {
+        "customer": "customer_name",
+        "awb":      "awb",
+        "so":       "so_number",
+        "invoice":  "invoice_number",
+    }
+    _search_labels = {
+        "customer": "Customer",
+        "awb":      "AWB",
+        "so":       "SO #",
+        "invoice":  "Invoice #",
+    }
+
+    # ── Sidebar — Part 2: search + dimension filters ──────────────────────
+    with st.sidebar:
         st.divider()
 
         st.markdown("**🔍 Search**")
         search_field = st.selectbox(
             "_sf",
-            options=["awb", "so", "invoice", "customer"],
-            format_func=lambda x: {
-                "awb": "AWB", "so": "SO #",
-                "invoice": "Invoice #", "customer": "Customer",
-            }[x],
+            options=list(_search_col_map.keys()),
+            format_func=lambda x: _search_labels[x],
             key="search_field",
             label_visibility="collapsed",
         )
-        search_q = st.text_input(
-            "_sq",
-            placeholder="Type to filter…",
-            key="search_q",
+
+        # Options for the selected search field
+        _scol = _search_col_map[search_field]
+        if not df.empty:
+            _raw_opts = df[_scol].dropna().unique().tolist()
+            search_options = sorted(
+                [str(v).strip() for v in _raw_opts if str(v).strip() and str(v).strip() != "–"],
+            )
+        else:
+            search_options = []
+
+        search_vals = st.multiselect(
+            f"Select {_search_labels[search_field]}",
+            options=search_options,
+            default=[],
+            key=f"search_vals_{search_field}",
+            placeholder=f"All {_search_labels[search_field]}s",
             label_visibility="collapsed",
         )
 
-    # ── Apply time filter ─────────────────────────────────────────────────
-    df = _apply_time_filter(df, time_sel, date_from, date_to)
-    kpi_vals = kpis.compute_kpis(df) if not df.empty else {}
-
-    # ── Sidebar — Part 2: dimension filters (need time-filtered df) ───────
-    all_states       = sorted(df["drop_state"].dropna().unique().tolist())  if not df.empty else []
-    all_transporters = sorted(df["transporter"].dropna().unique().tolist()) if not df.empty else []
-    all_statuses     = sorted(df["status"].dropna().unique().tolist())      if not df.empty else []
-
-    with st.sidebar:
         st.divider()
 
         st.markdown("**📍 State**")
@@ -811,16 +835,9 @@ def main() -> None:
             filtered = filtered[filtered["transporter"].isin(tp_sel)]
         if status_sel and set(status_sel) != set(all_statuses):
             filtered = filtered[filtered["status"].isin(status_sel)]
-        if search_q.strip():
-            q = search_q.strip().lower()
-            col_map = {
-                "awb": "awb", "so": "so_number",
-                "invoice": "invoice_number", "customer": "customer_name",
-            }
-            col = col_map.get(search_field, "awb")
-            filtered = filtered[
-                filtered[col].fillna("").str.lower().str.contains(q, regex=False)
-            ]
+        if search_vals:
+            col = _search_col_map[search_field]
+            filtered = filtered[filtered[col].fillna("").astype(str).isin(search_vals)]
 
     # ── Tab labels ────────────────────────────────────────────────────────
     sanity_counts = sanity.sanity_summary(df) if not df.empty else {
