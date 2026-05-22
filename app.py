@@ -400,53 +400,55 @@ def tab_dashboard(filtered: pd.DataFrame, kpi_vals: dict) -> None:
     render_awb_table(table_df, key_suffix="dashboard")
 
     # ── TTD Charts ───────────────────────────────────────────────────────
-    state_df = kpis.ttd_by_dimension(filtered, "drop_state",    "State")
-    cust_df  = kpis.ttd_by_dimension(filtered, "customer_name", "Customer")
+    try:
+        state_df = kpis.ttd_by_dimension(filtered, "drop_state",    "State")
+        cust_df  = kpis.ttd_by_dimension(filtered, "customer_name", "Customer")
+    except AttributeError:
+        state_df = cust_df = pd.DataFrame()  # kpis.py not yet updated
 
-    if not state_df.empty or not cust_df.empty:
-        st.markdown("---")
-        st.markdown("#### ⏱️ Avg Time to Deliver Breakdown")
-        ch1, ch2 = st.columns(2)
+    st.markdown("---")
+    st.markdown("#### ⏱️ Avg Time to Deliver Breakdown")
+    ch1, ch2 = st.columns(2)
 
-        with ch1:
-            st.caption("By State")
-            if state_df.empty:
-                st.info("No delivered shipments in this filter.")
-            else:
-                chart_s = (
-                    alt.Chart(state_df)
-                    .mark_bar(color="#1A73E8", cornerRadiusEnd=4)
-                    .encode(
-                        x=alt.X("Avg TTD (d):Q", title="Avg TTD (days)", axis=alt.Axis(tickMinStep=1)),
-                        y=alt.Y("State:N", sort="-x", title=None),
-                        tooltip=[
-                            alt.Tooltip("State:N"),
-                            alt.Tooltip("Avg TTD (d):Q", title="Avg TTD", format=".1f"),
-                        ],
-                    )
-                    .properties(height=max(160, len(state_df) * 30))
+    with ch1:
+        st.caption("By State")
+        if state_df.empty:
+            st.info("No delivered shipments with date data for the current filter.")
+        else:
+            chart_s = (
+                alt.Chart(state_df)
+                .mark_bar(color="#1A73E8", cornerRadiusEnd=4)
+                .encode(
+                    x=alt.X("Avg TTD (d):Q", title="Avg TTD (days)", axis=alt.Axis(tickMinStep=1)),
+                    y=alt.Y("State:N", sort="-x", title=None),
+                    tooltip=[
+                        alt.Tooltip("State:N"),
+                        alt.Tooltip("Avg TTD (d):Q", title="Avg TTD", format=".1f"),
+                    ],
                 )
-                st.altair_chart(chart_s, use_container_width=True)
+                .properties(height=max(160, len(state_df) * 30))
+            )
+            st.altair_chart(chart_s, use_container_width=True)
 
-        with ch2:
-            st.caption("By Customer")
-            if cust_df.empty:
-                st.info("No delivered shipments in this filter.")
-            else:
-                chart_c = (
-                    alt.Chart(cust_df)
-                    .mark_bar(color="#34A853", cornerRadiusEnd=4)
-                    .encode(
-                        x=alt.X("Avg TTD (d):Q", title="Avg TTD (days)", axis=alt.Axis(tickMinStep=1)),
-                        y=alt.Y("Customer:N", sort="-x", title=None),
-                        tooltip=[
-                            alt.Tooltip("Customer:N"),
-                            alt.Tooltip("Avg TTD (d):Q", title="Avg TTD", format=".1f"),
-                        ],
-                    )
-                    .properties(height=max(160, len(cust_df) * 30))
+    with ch2:
+        st.caption("By Customer")
+        if cust_df.empty:
+            st.info("No delivered shipments with date data for the current filter.")
+        else:
+            chart_c = (
+                alt.Chart(cust_df)
+                .mark_bar(color="#34A853", cornerRadiusEnd=4)
+                .encode(
+                    x=alt.X("Avg TTD (d):Q", title="Avg TTD (days)", axis=alt.Axis(tickMinStep=1)),
+                    y=alt.Y("Customer:N", sort="-x", title=None),
+                    tooltip=[
+                        alt.Tooltip("Customer:N"),
+                        alt.Tooltip("Avg TTD (d):Q", title="Avg TTD", format=".1f"),
+                    ],
                 )
-                st.altair_chart(chart_c, use_container_width=True)
+                .properties(height=max(160, len(cust_df) * 30))
+            )
+            st.altair_chart(chart_c, use_container_width=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
