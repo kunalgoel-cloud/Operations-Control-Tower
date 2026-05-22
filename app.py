@@ -146,7 +146,10 @@ def fmt_date(val) -> str:
 def _cached_load():
     raw = db.load_awb_view()
     appt_config = db.load_appt_config()
-    groups = db.load_customer_groups()
+    try:
+        groups = db.load_customer_groups()
+    except AttributeError:
+        groups = {}  # db.py not yet updated — degrade gracefully
     return raw, appt_config, groups
 
 
@@ -1034,6 +1037,10 @@ def main() -> None:
         if search_vals:
             col = _search_col_map[search_field]
             filtered = filtered[filtered[col].fillna("").astype(str).isin(search_vals)]
+
+    # Recompute KPIs from the fully-filtered data so every metric card
+    # (including avg TTD, counts in pills) reflects the active filter set.
+    kpi_vals = kpis.compute_kpis(filtered) if not filtered.empty else {}
 
     # ── Tab labels ────────────────────────────────────────────────────────
     sanity_counts = sanity.sanity_summary(df) if not df.empty else {
