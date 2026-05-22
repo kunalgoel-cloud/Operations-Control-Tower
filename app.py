@@ -12,6 +12,7 @@ Tabs:
 import time
 from datetime import date
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -370,6 +371,21 @@ def tab_dashboard(filtered: pd.DataFrame, kpi_vals: dict) -> None:
 
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
+    # ── Avg TTD metric card ───────────────────────────────────────────────
+    avg_ttd_val  = kpi_vals.get("avg_ttd")
+    del_count    = kpi_vals.get("delivered_count", 0)
+    ttd_display  = f"{avg_ttd_val} d" if avg_ttd_val is not None else "–"
+    _m1, _m2 = st.columns([1, 5])
+    with _m1:
+        st.metric(
+            label="⏱️ Avg Time to Deliver",
+            value=ttd_display,
+            delta=f"{del_count} delivered shipment{'s' if del_count != 1 else ''}",
+            delta_color="off",
+        )
+
+    st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+
     # ── Apply KPI cohort filter ───────────────────────────────────────────
     fn_map = {
         "all":       None,
@@ -382,6 +398,55 @@ def tab_dashboard(filtered: pd.DataFrame, kpi_vals: dict) -> None:
     table_df = fn(filtered) if (fn is not None and not filtered.empty) else filtered
 
     render_awb_table(table_df, key_suffix="dashboard")
+
+    # ── TTD Charts ───────────────────────────────────────────────────────
+    state_df = kpis.ttd_by_dimension(filtered, "drop_state",    "State")
+    cust_df  = kpis.ttd_by_dimension(filtered, "customer_name", "Customer")
+
+    if not state_df.empty or not cust_df.empty:
+        st.markdown("---")
+        st.markdown("#### ⏱️ Avg Time to Deliver Breakdown")
+        ch1, ch2 = st.columns(2)
+
+        with ch1:
+            st.caption("By State")
+            if state_df.empty:
+                st.info("No delivered shipments in this filter.")
+            else:
+                chart_s = (
+                    alt.Chart(state_df)
+                    .mark_bar(color="#1A73E8", cornerRadiusEnd=4)
+                    .encode(
+                        x=alt.X("Avg TTD (d):Q", title="Avg TTD (days)", axis=alt.Axis(tickMinStep=1)),
+                        y=alt.Y("State:N", sort="-x", title=None),
+                        tooltip=[
+                            alt.Tooltip("State:N"),
+                            alt.Tooltip("Avg TTD (d):Q", title="Avg TTD", format=".1f"),
+                        ],
+                    )
+                    .properties(height=max(160, len(state_df) * 30))
+                )
+                st.altair_chart(chart_s, use_container_width=True)
+
+        with ch2:
+            st.caption("By Customer")
+            if cust_df.empty:
+                st.info("No delivered shipments in this filter.")
+            else:
+                chart_c = (
+                    alt.Chart(cust_df)
+                    .mark_bar(color="#34A853", cornerRadiusEnd=4)
+                    .encode(
+                        x=alt.X("Avg TTD (d):Q", title="Avg TTD (days)", axis=alt.Axis(tickMinStep=1)),
+                        y=alt.Y("Customer:N", sort="-x", title=None),
+                        tooltip=[
+                            alt.Tooltip("Customer:N"),
+                            alt.Tooltip("Avg TTD (d):Q", title="Avg TTD", format=".1f"),
+                        ],
+                    )
+                    .properties(height=max(160, len(cust_df) * 30))
+                )
+                st.altair_chart(chart_c, use_container_width=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
