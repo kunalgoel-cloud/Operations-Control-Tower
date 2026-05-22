@@ -220,6 +220,17 @@ def render_awb_table(df: pd.DataFrame, key_suffix: str = "main") -> None:
         is_del = row.get("is_delivered", False)
         d_old  = int(row.get("days_old", 0) or 0)
 
+        # Time to deliver: delivery_date − order_date (only when DELIVERED)
+        ttd = None
+        if is_del:
+            try:
+                _od = pd.Timestamp(row.get("order_date"))
+                _dd = pd.Timestamp(row.get("delivery_date"))
+                if not pd.isna(_od) and not pd.isna(_dd):
+                    ttd = int((_dd - _od).days)
+            except Exception:
+                pass
+
         remark = str(row.get("latest_remark") or "")
         remark_short = remark[:40] + "…" if len(remark) > 40 else remark
 
@@ -246,8 +257,9 @@ def render_awb_table(df: pd.DataFrame, key_suffix: str = "main") -> None:
             "Variance":      row.get("var_str") or "–",
             "Appt":          row.get("appt_status") or "–",
             "Appt Date":     fmt_date(row.get("appointment_date")),
-            "POD":           pod_cell,
-            "Latest Remark": remark_short,
+            "POD":              pod_cell,
+            "Time to Deliver":  ttd,
+            "Latest Remark":    remark_short,
         })
 
     disp_df = pd.DataFrame(display_rows)
@@ -315,8 +327,9 @@ def render_awb_table(df: pd.DataFrame, key_suffix: str = "main") -> None:
             "Variance":      st.column_config.TextColumn("Variance",      width=80),
             "Appt":          st.column_config.TextColumn("Appt",          width=105),
             "Appt Date":     st.column_config.TextColumn("Appt Date",     width=100),
-            "POD":           st.column_config.LinkColumn("POD",           display_text="📄", width=55),
-            "Latest Remark": st.column_config.TextColumn("Latest Remark", width=210),
+            "POD":              st.column_config.LinkColumn("POD",              display_text="📄", width=55),
+            "Time to Deliver":  st.column_config.NumberColumn("Time to Deliver",  width=115, format="%d d"),
+            "Latest Remark":    st.column_config.TextColumn("Latest Remark",      width=210),
         },
     )
 
