@@ -146,18 +146,19 @@ def fmt_date(val) -> str:
 def _cached_load():
     raw = db.load_awb_view()
     appt_config = db.load_appt_config()
-    return raw, appt_config
+    groups = db.load_customer_groups()
+    return raw, appt_config, groups
 
 
 def load_data(force: bool = False):
     if force:
         _cached_load.clear()
-    raw, appt_config = _cached_load()
+    raw, appt_config, groups = _cached_load()
     if raw.empty:
-        return pd.DataFrame(), appt_config, {}
+        return pd.DataFrame(), appt_config, {}, groups
     df = kpis.build_display_rows(raw, appt_config)
     kpi_vals = kpis.compute_kpis(df)
-    return df, appt_config, kpi_vals
+    return df, appt_config, kpi_vals, groups
 
 
 # ── Time filter ──────────────────────────────────────────────────────────────
@@ -221,13 +222,17 @@ def render_awb_table(df: pd.DataFrame, key_suffix: str = "main") -> None:
         is_del = row.get("is_delivered", False)
         d_old  = int(row.get("days_old", 0) or 0)
 
-        # Time to deliver: delivery_date − order_date (only when DELIVERED)
+        # Time to deliver: delivery_date − order_date (fallback: dispatch_date)
         ttd = None
         if is_del:
             try:
-                _od = pd.Timestamp(row.get("order_date"))
-                _dd = pd.Timestamp(row.get("delivery_date"))
-                if not pd.isna(_od) and not pd.isna(_dd):
+                def _safe_ts_local(v):
+                    if v is None: return None
+                    ts = pd.Timestamp(v)
+                    return None if pd.isna(ts) else ts
+                _od = _safe_ts_local(row.get("order_date")) or _safe_ts_local(row.get("dispatch_date"))
+                _dd = _safe_ts_local(row.get("delivery_date"))
+                if _od is not None and _dd is not None:
                     ttd = int((_dd - _od).days)
             except Exception:
                 pass
@@ -572,8 +577,94 @@ def tab_sanity(df: pd.DataFrame) -> None:
 # TAB: SETTINGS
 # ══════════════════════════════════════════════════════════════════════════════
 
-def tab_settings() -> None:
+def tab_settings(df: pd.DataFrame, groups: dict) -> None:
     st.markdown("### ⚙️ Settings")
+
+    # ── Customer Groups ───────────────────────────────────────────────────
+    with st.expander("👥 Customer Groups", expanded=True):
+        st.markdown(
+            "Group customer names so you can filter the dashboard by group via the sidebar."
+        )
+
+        if groups:
+            group_rows = [
+                {"Group": g, "Customers": ", ".join(members)}
+                for g, members in groups.items()
+            ]
+            st.dataframe(
+                pd.DataFrame(group_rows),
+                use_container_width=True, hide_index=True,
+                height=min(220, len(groups) * 36 + 40),
+            )
+        else:
+            st.caption("No groups defined yet.")
+
+        st.markdown("**Add customer to group:**")
+        ag1, ag2, ag3 = st.columns([2, 3, 1])
+        with ag1:
+            grp_name = st.text_input(
+                "Group name (new or existing)",
+                placeholder="e.g. Key Accounts",
+                key="grp_name_input",
+            )
+        with ag2:
+            cust_opts = []
+            if not df.empty and "customer_name" in df.columns:
+                cust_opts = sorted(set(
+                    str(v).strip() for v in df["customer_name"].dropna().unique()
+                    if str(v).strip() and str(v).strip() != "–"
+                ))
+            grp_cust = st.selectbox(
+                "Customer", ["— select —"] + cust_opts, key="grp_cust_sel"
+            )
+        with ag3:
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("➕ Add", key="grp_add_btn", type="primary"):
+                if grp_name.strip() and grp_cust != "— select —":
+                    db.add_customer_to_group(grp_name.strip(), grp_cust)
+                    st.success(f"Added **{grp_cust}** to group '{grp_name.strip()}'")
+                    _cached_load.clear()
+                    st.rerun()
+                else:
+                    st.error("Enter a group name and select a customer.")
+
+        if groups:
+            st.markdown("---")
+            st.markdown("**Remove customer from group:**")
+            rg1, rg2, rg3 = st.columns([2, 3, 1])
+            with rg1:
+                del_group = st.selectbox(
+                    "Group", ["— select —"] + list(groups.keys()), key="grp_del_group"
+                )
+            with rg2:
+                del_cust_opts = groups.get(del_group, []) if del_group != "— select —" else []
+                del_cust = st.selectbox(
+                    "Customer", ["— select —"] + del_cust_opts, key="grp_del_cust"
+                )
+            with rg3:
+                st.markdown("<br>", unsafe_allow_html=True)
+                if st.button("🗑️ Remove", key="grp_rem_btn"):
+                    if del_group != "— select —" and del_cust != "— select —":
+                        db.remove_customer_from_group(del_group, del_cust)
+                        st.success(f"Removed **{del_cust}** from '{del_group}'")
+                        _cached_load.clear()
+                        st.rerun()
+
+            st.markdown("**Delete entire group:**")
+            dg1, dg2 = st.columns([4, 1])
+            with dg1:
+                del_full_grp = st.selectbox(
+                    "Group to delete", ["— select —"] + list(groups.keys()),
+                    key="grp_del_full"
+                )
+            with dg2:
+                st.markdown("<br>", unsafe_allow_html=True)
+                if st.button("🗑️ Delete", key="grp_del_full_btn"):
+                    if del_full_grp != "— select —":
+                        db.delete_customer_group(del_full_grp)
+                        st.success(f"Deleted group '{del_full_grp}'")
+                        _cached_load.clear()
+                        st.rerun()
 
     with st.expander("📋 Appointment Config", expanded=True):
         st.markdown("Define which customers require a delivery appointment.")
@@ -805,7 +896,7 @@ def main() -> None:
 
     # ── Load data ─────────────────────────────────────────────────────────
     with st.spinner("Loading data…"):
-        df, appt_config, kpi_vals = load_data()
+        df, appt_config, kpi_vals, groups = load_data()
 
     # ── Sidebar — Part 1: time window only ───────────────────────────────
     with st.sidebar:
@@ -854,8 +945,25 @@ def main() -> None:
         "invoice":  "Invoice #",
     }
 
-    # ── Sidebar — Part 2: search + dimension filters ──────────────────────
+    # ── Sidebar — Part 2: group + search + dimension filters ─────────────
     with st.sidebar:
+        st.divider()
+
+        # ── Customer Group filter ─────────────────────────────────────────
+        st.markdown("**👥 Customer Group**")
+        if groups:
+            group_sel = st.multiselect(
+                "_grp",
+                options=list(groups.keys()),
+                default=[],
+                key="group_sel",
+                label_visibility="collapsed",
+                placeholder="All groups",
+            )
+        else:
+            st.caption("No groups — add in ⚙️ Settings.")
+            group_sel = []
+
         st.divider()
 
         st.markdown("**🔍 Search**")
@@ -909,6 +1017,14 @@ def main() -> None:
     # ── Apply dimension + search filters ─────────────────────────────────
     filtered = df.copy() if not df.empty else pd.DataFrame()
     if not filtered.empty:
+        # Group filter (expands to customer names in the selected groups)
+        if group_sel:
+            group_customers: set[str] = set()
+            for g in group_sel:
+                group_customers.update(groups.get(g, []))
+            if group_customers:
+                filtered = filtered[filtered["customer_name"].isin(group_customers)]
+
         if state_sel and set(state_sel) != set(all_states):
             filtered = filtered[filtered["drop_state"].isin(state_sel)]
         if tp_sel and set(tp_sel) != set(all_transporters):
@@ -944,7 +1060,7 @@ def main() -> None:
     with tab3:
         tab_sanity(df)
     with tab4:
-        tab_settings()
+        tab_settings(df, groups)
     with tab5:
         tab_manual_mapping(df)
 
