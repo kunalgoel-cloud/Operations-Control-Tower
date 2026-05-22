@@ -12,6 +12,20 @@ from typing import Any
 import pandas as pd
 
 
+# ── TTD helper ─────────────────────────────────────────────────────────────
+
+def _compute_ttd(row: pd.Series):
+    """Return TTD in days (float) for a delivered row, else None."""
+    try:
+        od = pd.Timestamp(row.get("order_date"))
+        dd = pd.Timestamp(row.get("delivery_date"))
+        if pd.isna(od) or pd.isna(dd):
+            return None
+        return float((dd - od).days)
+    except Exception:
+        return None
+
+
 # ── AfterShip carrier resolver ─────────────────────────────────────────────
 
 _CARRIER_MAP = [
@@ -194,13 +208,21 @@ def compute_kpis(df: pd.DataFrame) -> dict[str, int]:
             "edd_breached": 0,
         }
 
-    active = df[~df["is_delivered"]]
+    active        = df[~df["is_delivered"]]
+    delivered_df  = df[df["is_delivered"]]
+
+    # ── Avg TTD (delivery_date − order_date for delivered rows) ───────────
+    ttd_vals = delivered_df.apply(_compute_ttd, axis=1).dropna()
+    avg_ttd  = round(float(ttd_vals.mean()), 1) if not ttd_vals.empty else None
+
     return {
         "total_active":    int(len(active)),
         "stuck":           int((active["days_old"] > 14).sum()),
         "pending_appt":    int((active["appt_status"] == "pending").sum()),
         "delivered_today": int(df["is_deliv_today"].sum()),
         "edd_breached":    int(((~df["is_delivered"]) & (df["var_days"] > 0)).sum()),
+        "avg_ttd":         avg_ttd,
+        "delivered_count": int(len(delivered_df)),
     }
 
 
@@ -290,4 +312,35 @@ def variance_by_state(df: pd.DataFrame) -> pd.DataFrame:
         })
 
     result = pd.DataFrame(rows).sort_values("State")
+    return result
+
+
+# ── TTD by dimension ────────────────────────────────────────────────────────
+
+def ttd_by_dimension(df: pd.DataFrame, dimension: str, label: str) -> pd.DataFrame:
+    """
+    Returns avg TTD (days) for delivered shipments grouped by `dimension` column.
+    `label` becomes the output column name for the group key.
+    """
+    if df.empty:
+        return pd.DataFrame(columns=[label, "Avg TTD (d)"])
+
+    delivered = df[df["is_delivered"]].copy()
+    if delivered.empty:
+        return pd.DataFrame(columns=[label, "Avg TTD (d)"])
+
+    delivered["_ttd"] = delivered.apply(_compute_ttd, axis=1)
+    valid = delivered[[dimension, "_ttd"]].dropna()
+
+    if valid.empty:
+        return pd.DataFrame(columns=[label, "Avg TTD (d)"])
+
+    result = (
+        valid.groupby(dimension)["_ttd"]
+        .mean()
+        .round(1)
+        .reset_index()
+        .rename(columns={dimension: label, "_ttd": "Avg TTD (d)"})
+        .sort_values("Avg TTD (d)", ascending=True)
+    )
     return result
