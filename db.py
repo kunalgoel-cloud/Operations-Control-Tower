@@ -552,6 +552,40 @@ def apply_manual_so_mapping() -> int:
     return len(updates)
 
 
+# ── Customer Groups ────────────────────────────────────────────────────────
+
+def load_customer_groups() -> dict[str, list[str]]:
+    """Return {group_name: [customer_name, ...]} sorted."""
+    try:
+        resp = get_client().table("customer_groups").select("group_name, customer_name").execute()
+        groups: dict[str, list[str]] = {}
+        for row in (resp.data or []):
+            groups.setdefault(row["group_name"], []).append(row["customer_name"])
+        return {g: sorted(members) for g, members in sorted(groups.items())}
+    except Exception:
+        return {}
+
+
+def add_customer_to_group(group_name: str, customer_name: str) -> None:
+    """Add a customer to a group (upsert — safe to call if already exists)."""
+    get_client().table("customer_groups").upsert(
+        {"group_name": group_name.strip(), "customer_name": customer_name.strip()},
+        on_conflict="group_name,customer_name",
+    ).execute()
+
+
+def remove_customer_from_group(group_name: str, customer_name: str) -> None:
+    """Remove one customer from a group."""
+    get_client().table("customer_groups").delete().eq(
+        "group_name", group_name
+    ).eq("customer_name", customer_name).execute()
+
+
+def delete_customer_group(group_name: str) -> None:
+    """Delete an entire group (all member rows)."""
+    get_client().table("customer_groups").delete().eq("group_name", group_name).execute()
+
+
 # ── Reset ──────────────────────────────────────────────────────────────────
 
 def reset_awb_view() -> None:
