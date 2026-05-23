@@ -14,12 +14,27 @@ import pandas as pd
 
 # ── TTD helper ─────────────────────────────────────────────────────────────
 
-def _compute_ttd(row: pd.Series):
-    """Return TTD in days (float) for a delivered row, else None."""
+def _safe_ts(val) -> "pd.Timestamp | None":
+    """Convert any value to Timestamp, returning None for nulls/errors."""
+    if val is None:
+        return None
     try:
-        od = pd.Timestamp(row.get("order_date"))
-        dd = pd.Timestamp(row.get("delivery_date"))
-        if pd.isna(od) or pd.isna(dd):
+        ts = pd.Timestamp(val)
+        return None if pd.isna(ts) else ts
+    except Exception:
+        return None
+
+
+def _compute_ttd(row: pd.Series):
+    """Return TTD in days (float) for a delivered row, else None.
+
+    Uses order_date as start; falls back to dispatch_date when order_date is absent
+    (e.g. direct-booked shipments with no WMS row).
+    """
+    try:
+        od = _safe_ts(row.get("order_date")) or _safe_ts(row.get("dispatch_date"))
+        dd = _safe_ts(row.get("delivery_date"))
+        if od is None or dd is None:
             return None
         return float((dd - od).days)
     except Exception:
@@ -215,6 +230,22 @@ def compute_kpis(df: pd.DataFrame) -> dict[str, int]:
     ttd_vals = delivered_df.apply(_compute_ttd, axis=1).dropna()
     avg_ttd  = round(float(ttd_vals.mean()), 1) if not ttd_vals.empty else None
 
+    # ── Delivered last 7 days ─────────────────────────────────────────────
+    today_ts      = pd.Timestamp(date.today())
+    cutoff_past   = today_ts - pd.Timedelta(days=7)
+    cutoff_future = today_ts + pd.Timedelta(days=7)
+
+    del_dates  = pd.to_datetime(
+        df.loc[df["is_delivered"], "delivery_date"], errors="coerce"
+    )
+    del_last_7 = int(((del_dates >= cutoff_past) & (del_dates <= today_ts)).sum())
+
+    # ── EDD in next 7 days (active shipments only) ────────────────────────
+    edd_dates  = pd.to_datetime(
+        df.loc[~df["is_delivered"], "estimated_delivery_date"], errors="coerce"
+    )
+    edd_next_7 = int(((edd_dates >= today_ts) & (edd_dates <= cutoff_future)).sum())
+
     return {
         "total_active":    int(len(active)),
         "stuck":           int((active["days_old"] > 14).sum()),
@@ -223,6 +254,8 @@ def compute_kpis(df: pd.DataFrame) -> dict[str, int]:
         "edd_breached":    int(((~df["is_delivered"]) & (df["var_days"] > 0)).sum()),
         "avg_ttd":         avg_ttd,
         "delivered_count": int(len(delivered_df)),
+        "del_last_7":      del_last_7,
+        "edd_next_7":      edd_next_7,
     }
 
 
