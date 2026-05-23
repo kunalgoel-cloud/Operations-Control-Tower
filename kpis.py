@@ -288,6 +288,30 @@ def cohort_edd_breached(df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def cohort_delivered_last_7(df: pd.DataFrame) -> pd.DataFrame:
+    """Shipments delivered in the last 7 days."""
+    if df.empty:
+        return df
+    today_ts    = pd.Timestamp(date.today())
+    cutoff_past = today_ts - pd.Timedelta(days=7)
+    delivered   = df[df["is_delivered"]].copy()
+    dates       = pd.to_datetime(delivered["delivery_date"], errors="coerce")
+    mask        = (dates >= cutoff_past) & (dates <= today_ts)
+    return delivered.loc[mask[mask].index]
+
+
+def cohort_edd_next_7(df: pd.DataFrame) -> pd.DataFrame:
+    """Active shipments whose EDD falls within the next 7 days."""
+    if df.empty:
+        return df
+    today_ts      = pd.Timestamp(date.today())
+    cutoff_future = today_ts + pd.Timedelta(days=7)
+    active        = df[~df["is_delivered"]].copy()
+    dates         = pd.to_datetime(active["estimated_delivery_date"], errors="coerce")
+    mask          = (dates >= today_ts) & (dates <= cutoff_future)
+    return active.loc[mask[mask].index]
+
+
 # ── Variance by state ──────────────────────────────────────────────────────
 
 def variance_by_state(df: pd.DataFrame) -> pd.DataFrame:
