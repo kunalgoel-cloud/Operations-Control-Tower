@@ -355,11 +355,13 @@ def tab_dashboard(filtered: pd.DataFrame, kpi_vals: dict) -> None:
         st.session_state["active_kpi"] = "all"
 
     kpi_defs = [
-        ("all",       "All",              None,                         kpi_vals.get("total_active",    0)),
-        ("stuck",     "🚨 Stuck 14d+",    kpis.cohort_stuck,            kpi_vals.get("stuck",           0)),
-        ("appt",      "📋 Pending Appt",  kpis.cohort_pending_appt,     kpi_vals.get("pending_appt",    0)),
-        ("delivered", "✅ Delivered Today", kpis.cohort_delivered_today, kpi_vals.get("delivered_today", 0)),
-        ("edd",       "⏰ EDD Breached",   kpis.cohort_edd_breached,     kpi_vals.get("edd_breached",    0)),
+        ("all",    "All",               None,                            kpi_vals.get("total_active",    0)),
+        ("stuck",  "🚨 Stuck 14d+",     kpis.cohort_stuck,               kpi_vals.get("stuck",           0)),
+        ("appt",   "📋 Pending Appt",   kpis.cohort_pending_appt,        kpi_vals.get("pending_appt",    0)),
+        ("deltoday","✅ Del'd Today",    kpis.cohort_delivered_today,     kpi_vals.get("delivered_today", 0)),
+        ("edd",    "⏰ EDD Breached",    kpis.cohort_edd_breached,        kpi_vals.get("edd_breached",    0)),
+        ("del7",   "📦 Del'd Last 7d",  kpis.cohort_delivered_last_7,    kpi_vals.get("del_last_7",      0)),
+        ("edd7",   "📅 EDD Next 7d",    kpis.cohort_edd_next_7,          kpi_vals.get("edd_next_7",      0)),
     ]
 
     active_key = st.session_state.get("active_kpi", "all")
@@ -379,14 +381,12 @@ def tab_dashboard(filtered: pd.DataFrame, kpi_vals: dict) -> None:
 
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
-    # ── Metric cards ──────────────────────────────────────────────────────
+    # ── Avg TTD metric card ───────────────────────────────────────────────
     avg_ttd_val = kpi_vals.get("avg_ttd")
     del_count   = kpi_vals.get("delivered_count", 0)
-    del_last_7  = kpi_vals.get("del_last_7", 0)
-    edd_next_7  = kpi_vals.get("edd_next_7", 0)
     ttd_display = f"{avg_ttd_val} d" if avg_ttd_val is not None else "–"
 
-    _m1, _m2, _m3, _mspc = st.columns([1, 1, 1, 3])
+    _m1, _mspc = st.columns([1, 5])
     with _m1:
         st.metric(
             label="⏱️ Avg Time to Deliver",
@@ -394,26 +394,18 @@ def tab_dashboard(filtered: pd.DataFrame, kpi_vals: dict) -> None:
             delta=f"{del_count} delivered total",
             delta_color="off",
         )
-    with _m2:
-        st.metric(
-            label="✅ Delivered Last 7d",
-            value=del_last_7,
-        )
-    with _m3:
-        st.metric(
-            label="📅 EDD Next 7d",
-            value=edd_next_7,
-        )
 
     st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
 
     # ── Apply KPI cohort filter ───────────────────────────────────────────
     fn_map = {
-        "all":       None,
-        "stuck":     kpis.cohort_stuck,
-        "appt":      kpis.cohort_pending_appt,
-        "delivered": kpis.cohort_delivered_today,
-        "edd":       kpis.cohort_edd_breached,
+        "all":      None,
+        "stuck":    kpis.cohort_stuck,
+        "appt":     kpis.cohort_pending_appt,
+        "deltoday": kpis.cohort_delivered_today,
+        "edd":      kpis.cohort_edd_breached,
+        "del7":     kpis.cohort_delivered_last_7,
+        "edd7":     kpis.cohort_edd_next_7,
     }
     fn = fn_map.get(active_key)
     table_df = fn(filtered) if (fn is not None and not filtered.empty) else filtered
