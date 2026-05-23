@@ -379,17 +379,30 @@ def tab_dashboard(filtered: pd.DataFrame, kpi_vals: dict) -> None:
 
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
-    # ── Avg TTD metric card ───────────────────────────────────────────────
-    avg_ttd_val  = kpi_vals.get("avg_ttd")
-    del_count    = kpi_vals.get("delivered_count", 0)
-    ttd_display  = f"{avg_ttd_val} d" if avg_ttd_val is not None else "–"
-    _m1, _m2 = st.columns([1, 5])
+    # ── Metric cards ──────────────────────────────────────────────────────
+    avg_ttd_val = kpi_vals.get("avg_ttd")
+    del_count   = kpi_vals.get("delivered_count", 0)
+    del_last_7  = kpi_vals.get("del_last_7", 0)
+    edd_next_7  = kpi_vals.get("edd_next_7", 0)
+    ttd_display = f"{avg_ttd_val} d" if avg_ttd_val is not None else "–"
+
+    _m1, _m2, _m3, _mspc = st.columns([1, 1, 1, 3])
     with _m1:
         st.metric(
             label="⏱️ Avg Time to Deliver",
             value=ttd_display,
-            delta=f"{del_count} delivered shipment{'s' if del_count != 1 else ''}",
+            delta=f"{del_count} delivered total",
             delta_color="off",
+        )
+    with _m2:
+        st.metric(
+            label="✅ Delivered Last 7d",
+            value=del_last_7,
+        )
+    with _m3:
+        st.metric(
+            label="📅 EDD Next 7d",
+            value=edd_next_7,
         )
 
     st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
