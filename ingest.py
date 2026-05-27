@@ -724,6 +724,8 @@ def apply_stuck_orders_to_db(stuck_records: list[dict]) -> tuple[int, int]:
                     patch["customer_po_ref"] = stuck["customer_po_ref"]
                 if stuck.get("expected_ship_date"):
                     patch["expected_ship_date"] = stuck["expected_ship_date"]
+                if stuck.get("order_date"):
+                    patch["order_date"] = stuck["order_date"]
                 if len(patch) > 1:
                     updates.append(patch)
 
@@ -775,6 +777,8 @@ def apply_stuck_orders_to_db(stuck_records: list[dict]) -> tuple[int, int]:
                     patch["customer_po_ref"] = stuck["customer_po_ref"]
                 if stuck.get("expected_ship_date"):
                     patch["expected_ship_date"] = stuck["expected_ship_date"]
+                if stuck.get("order_date"):
+                    patch["order_date"] = stuck["order_date"]
                 if len(patch) > 1:
                     updates.append(patch)
 
@@ -828,6 +832,8 @@ def apply_stuck_orders_to_db(stuck_records: list[dict]) -> tuple[int, int]:
                     patch["customer_po_ref"] = stuck["customer_po_ref"]
                 if stuck.get("expected_ship_date"):
                     patch["expected_ship_date"] = stuck["expected_ship_date"]
+                if stuck.get("order_date"):
+                    patch["order_date"] = stuck["order_date"]
                 if len(patch) > 1:
                     updates.append(patch)
 
@@ -918,6 +924,8 @@ def apply_stuck_orders_to_db(stuck_records: list[dict]) -> tuple[int, int]:
                     patch["customer_po_ref"] = stuck["customer_po_ref"]
                 if stuck.get("expected_ship_date"):
                     patch["expected_ship_date"] = stuck["expected_ship_date"]
+                if stuck.get("order_date"):
+                    patch["order_date"] = stuck["order_date"]
                 if len(patch) > 1:
                     c_updates.append(patch)
 
