@@ -295,10 +295,7 @@ def ingest_wms(df: pd.DataFrame) -> list[dict]:
             ]) or ""
         ).strip() or None
 
-        # Order date: WMS "Order Created Date" ONLY — never "Order Date"
-        rec["order_date"] = parse_date(
-            get(row, ["Order Created Date", "Order_Created_Date"])
-        )
+        # order_date is owned exclusively by RPT Stuck Orders — not read from WMS.
 
         rec["dispatch_date"] = parse_date(
             get(row, ["Dispatch Date", "Dispatch_Date", "Shipped Date", "Pickup Date"])
