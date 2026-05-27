@@ -41,6 +41,23 @@ def _compute_ttd(row: pd.Series):
         return None
 
 
+def _compute_otd(row: pd.Series):
+    """Return order-to-dispatch time in days (float), else None.
+
+    Measures how long it takes from order_date to dispatch_date.
+    Requires both dates to be present; negative values (data errors) are excluded.
+    """
+    try:
+        od = _safe_ts(row.get("order_date"))
+        dd = _safe_ts(row.get("dispatch_date"))
+        if od is None or dd is None:
+            return None
+        diff = float((dd - od).days)
+        return diff if diff >= 0 else None
+    except Exception:
+        return None
+
+
 # ── AfterShip carrier resolver ─────────────────────────────────────────────
 
 _CARRIER_MAP = [
@@ -230,6 +247,11 @@ def compute_kpis(df: pd.DataFrame) -> dict[str, int]:
     ttd_vals = delivered_df.apply(_compute_ttd, axis=1).dropna()
     avg_ttd  = round(float(ttd_vals.mean()), 1) if not ttd_vals.empty else None
 
+    # ── Avg OTD (dispatch_date − order_date for all dispatched rows) ──────
+    otd_vals = df.apply(_compute_otd, axis=1).dropna()
+    avg_otd  = round(float(otd_vals.mean()), 1) if not otd_vals.empty else None
+    otd_count = int(len(otd_vals))
+
     # ── Delivered last 7 days ─────────────────────────────────────────────
     today_ts      = pd.Timestamp(date.today())
     cutoff_past   = today_ts - pd.Timedelta(days=7)
@@ -256,6 +278,8 @@ def compute_kpis(df: pd.DataFrame) -> dict[str, int]:
         "delivered_count": int(len(delivered_df)),
         "del_last_7":      del_last_7,
         "edd_next_7":      edd_next_7,
+        "avg_otd":         avg_otd,
+        "otd_count":       otd_count,
     }
 
 
