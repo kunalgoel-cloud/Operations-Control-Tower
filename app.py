@@ -384,17 +384,28 @@ def tab_dashboard(filtered: pd.DataFrame, kpi_vals: dict) -> None:
 
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
-    # ── Avg TTD metric card ───────────────────────────────────────────────
+    # ── Avg TTD + Avg OTD metric cards ───────────────────────────────────
     avg_ttd_val = kpi_vals.get("avg_ttd")
     del_count   = kpi_vals.get("delivered_count", 0)
     ttd_display = f"{avg_ttd_val} d" if avg_ttd_val is not None else "–"
 
-    _m1, _mspc = st.columns([1, 5])
+    avg_otd_val = kpi_vals.get("avg_otd")
+    otd_count   = kpi_vals.get("otd_count", 0)
+    otd_display = f"{avg_otd_val} d" if avg_otd_val is not None else "–"
+
+    _m1, _m2, _mspc = st.columns([1, 1, 4])
     with _m1:
         st.metric(
             label="⏱️ Avg Time to Deliver",
             value=ttd_display,
             delta=f"{del_count} delivered total",
+            delta_color="off",
+        )
+    with _m2:
+        st.metric(
+            label="📦 Avg Order → Dispatch",
+            value=otd_display,
+            delta=f"{otd_count} shipments",
             delta_color="off",
         )
 
