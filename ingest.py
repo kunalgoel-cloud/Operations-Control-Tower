@@ -999,10 +999,17 @@ def process_uploaded_file(uploaded_file) -> IngestResult:
         if file_type == "wms_dispatch":
             records = ingest_wms(df)
             inserted, updated = db.upsert_awb_records(records)
+            # Backfill SO#/PO Ref/Invoice#/Exp Ship from a previous Stuck
+            # Orders upload, so these AWBs don't sit blank until Stuck
+            # Orders happens to be re-uploaded.
+            touched_awbs = [r["awb"] for r in records if r.get("awb")]
+            db.backfill_awb_from_stuck_cache(touched_awbs)
 
         elif file_type == "courier_tracking":
             records = ingest_courier_mis(df)
             inserted, updated = db.upsert_awb_records(records)
+            touched_awbs = [r["awb"] for r in records if r.get("awb")]
+            db.backfill_awb_from_stuck_cache(touched_awbs)
 
         elif file_type == "stuck_orders":
             stuck = ingest_stuck_orders(df)
