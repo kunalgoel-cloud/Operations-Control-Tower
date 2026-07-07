@@ -224,12 +224,44 @@ def get_distinct_values(column: str) -> list[str]:
 
 # ── Upsert ─────────────────────────────────────────────────────────────────
 
+def _dedupe_records(records: list[dict]) -> list[dict]:
+    """
+    Merge records that share the same AWB *within a single incoming batch*,
+    applying the same sticky merge rules used against the DB.
+
+    Source files (especially Courier MIS exports) often contain one row per
+    tracking scan/status event rather than one row per shipment, so the same
+    AWB can appear many times in a single upload. Without this step, every
+    occurrence of a brand-new AWB gets queued as its own INSERT (since each
+    is only checked against the DB snapshot, never against each other),
+    producing duplicate rows for the same AWB.
+    """
+    merged_map: dict[str, dict] = {}
+    order: list[str] = []
+    for rec in records:
+        awb = (rec.get("awb") or "").strip()
+        if not awb:
+            continue
+        if awb not in merged_map:
+            merged_map[awb] = dict(rec)
+            order.append(awb)
+        else:
+            merged_map[awb] = _merge_record(merged_map[awb], rec)
+    return [merged_map[a] for a in order]
+
+
 def upsert_awb_records(records: list[dict]) -> tuple[int, int]:
     """
     Upsert a list of awb records applying sticky merge rules.
 
     Returns (inserted, updated) counts.
     """
+    if not records:
+        return 0, 0
+
+    # Collapse any same-AWB rows within this batch BEFORE touching the DB,
+    # so a file with multiple rows per AWB never produces duplicate DB rows.
+    records = _dedupe_records(records)
     if not records:
         return 0, 0
 
@@ -446,6 +478,105 @@ def upsert_stuck_orders_cache(records: list[dict]) -> int:
         return len(to_upsert)
     except Exception:
         return 0  # silently skip if table doesn't exist yet
+
+
+def backfill_awb_from_stuck_cache(awbs: list[str]) -> int:
+    """
+    After a WMS or Courier MIS file is ingested, try to fill in so_number,
+    invoice_number, customer_po_ref and expected_ship_date for the AWBs just
+    written, using data already cached from a *previous* Stuck Orders upload.
+
+    Without this, an AWB uploaded after the most recent Stuck Orders file
+    would show blank SO #/PO Ref/Invoice # in the tracker until Stuck Orders
+    is re-uploaded — even though the matching data already exists in
+    stuck_orders_cache. This closes that gap by running the same invoice/SO
+    matching logic immediately, scoped to only the AWBs just touched.
+
+    Returns the number of awb_view rows patched.
+    """
+    if not awbs:
+        return 0
+    try:
+        client = get_client()
+
+        # Only look at rows that are still missing something we could fill.
+        resp = (
+            client.table("awb_view")
+            .select("awb, invoice_number, so_number, customer_po_ref, expected_ship_date")
+            .in_("awb", awbs)
+            .execute()
+        )
+        rows = resp.data or []
+        rows = [
+            r for r in rows
+            if not r.get("so_number") or not r.get("customer_po_ref") or not r.get("expected_ship_date")
+        ]
+        if not rows:
+            return 0
+
+        invoice_keys = {r["invoice_number"].strip() for r in rows if r.get("invoice_number")}
+        so_keys = {r["so_number"].strip() for r in rows if r.get("so_number")}
+
+        cache_by_invoice: dict[str, dict] = {}
+        cache_by_so: dict[str, dict] = {}
+
+        if invoice_keys:
+            resp2 = (
+                client.table("stuck_orders_cache")
+                .select("*")
+                .in_("invoice_numbers", list(invoice_keys))
+                .execute()
+            )
+            for c in (resp2.data or []):
+                # invoice_numbers may hold multiple comma-separated refs
+                for part in (c.get("invoice_numbers") or "").split(","):
+                    part = part.strip()
+                    if part:
+                        cache_by_invoice[part] = c
+
+        if so_keys:
+            resp3 = (
+                client.table("stuck_orders_cache")
+                .select("*")
+                .in_("so_number", list(so_keys))
+                .execute()
+            )
+            for c in (resp3.data or []):
+                if c.get("so_number"):
+                    cache_by_so[c["so_number"]] = c
+
+        if not cache_by_invoice and not cache_by_so:
+            return 0
+
+        updates: list[dict] = []
+        for r in rows:
+            inv = (r.get("invoice_number") or "").strip()
+            so = (r.get("so_number") or "").strip()
+            cache = (inv and cache_by_invoice.get(inv)) or (so and cache_by_so.get(so))
+            if not cache:
+                continue
+
+            patch: dict[str, Any] = {"awb": r["awb"]}
+            if not so and cache.get("so_number"):
+                patch["so_number"] = cache["so_number"]
+            if not r.get("customer_po_ref") and cache.get("customer_po_ref"):
+                patch["customer_po_ref"] = cache["customer_po_ref"]
+            if not r.get("expected_ship_date") and cache.get("expected_ship_date"):
+                patch["expected_ship_date"] = cache["expected_ship_date"]
+            if len(patch) > 1:
+                updates.append(patch)
+
+        if not updates:
+            return 0
+
+        chunk = 200
+        for i in range(0, len(updates), chunk):
+            client.table("awb_view").upsert(
+                updates[i : i + chunk], on_conflict="awb"
+            ).execute()
+        return len(updates)
+    except Exception:
+        return 0  # cache table may not exist yet — skip silently
 
 
 def load_awb_so_mapping() -> pd.DataFrame:
