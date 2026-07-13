@@ -314,7 +314,7 @@ def render_awb_table(df: pd.DataFrame, key_suffix: str = "main") -> None:
     # ── Column widths ─────────────────────────────────────────────────────
     st.dataframe(
         styled,
-        use_container_width=True,
+        width='stretch',
         hide_index=True,
         height=560,
         column_config={
@@ -376,7 +376,7 @@ def tab_dashboard(filtered: pd.DataFrame, kpi_vals: dict) -> None:
             if st.button(
                 f"{label}  ·  {count}",
                 key=f"kpi_{key}",
-                use_container_width=True,
+                width='stretch',
                 type="primary" if active_key == key else "secondary",
             ):
                 st.session_state["active_kpi"] = key
@@ -455,7 +455,7 @@ def tab_dashboard(filtered: pd.DataFrame, kpi_vals: dict) -> None:
                 )
                 .properties(height=max(160, len(state_df) * 30))
             )
-            st.altair_chart(chart_s, use_container_width=True)
+            st.altair_chart(chart_s, width='stretch')
 
     with ch2:
         st.caption("By Customer")
@@ -475,7 +475,7 @@ def tab_dashboard(filtered: pd.DataFrame, kpi_vals: dict) -> None:
                 )
                 .properties(height=max(160, len(cust_df) * 30))
             )
-            st.altair_chart(chart_c, use_container_width=True)
+            st.altair_chart(chart_c, width='stretch')
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -576,7 +576,7 @@ def tab_sanity(df: pd.DataFrame) -> None:
             st.success("✅ No missing critical fields found.")
         else:
             st.warning(f"⚠️ {len(missing_df)} AWBs have missing critical fields")
-            st.dataframe(missing_df, use_container_width=True, hide_index=True, height=350)
+            st.dataframe(missing_df, width='stretch', hide_index=True, height=350)
 
     with col_right:
         st.markdown("#### Cross-File Consistency")
@@ -592,7 +592,7 @@ def tab_sanity(df: pd.DataFrame) -> None:
             st.success("✅ No cross-file consistency issues found.")
         else:
             st.warning(f"⚠️ {len(cross_df)} AWBs dispatched but missing from Courier MIS")
-            st.dataframe(cross_df, use_container_width=True, hide_index=True, height=350)
+            st.dataframe(cross_df, width='stretch', hide_index=True, height=350)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -615,7 +615,7 @@ def tab_settings(df: pd.DataFrame, groups: dict) -> None:
             ]
             st.dataframe(
                 pd.DataFrame(group_rows),
-                use_container_width=True, hide_index=True,
+                width='stretch', hide_index=True,
                 height=min(220, len(groups) * 36 + 40),
             )
         else:
@@ -696,7 +696,7 @@ def tab_settings(df: pd.DataFrame, groups: dict) -> None:
                 {"Customer Name": k, "Appointment Required": "Yes" if v else "No"}
                 for k, v in sorted(appt_cfg.items())
             ])
-            st.dataframe(appt_display, use_container_width=True, hide_index=True, height=200)
+            st.dataframe(appt_display, width='stretch', hide_index=True, height=200)
         else:
             st.caption("No appointment config entries yet.")
 
@@ -751,7 +751,7 @@ def tab_settings(df: pd.DataFrame, groups: dict) -> None:
                     "upload_status":  "Status",
                     "error_message":  "Error",
                 }),
-                use_container_width=True, hide_index=True, height=300,
+                width='stretch', hide_index=True, height=300,
             )
 
     with st.expander("🔄 Reset / Danger Zone", expanded=False):
@@ -820,7 +820,7 @@ def tab_manual_mapping(df: pd.DataFrame) -> None:
                 st.success("✅ All AWBs have a SO# — nothing to map.")
             else:
                 st.caption(f"{len(no_so)} AWBs without SO#")
-                st.dataframe(no_so, use_container_width=True, hide_index=True, height=260)
+                st.dataframe(no_so, width='stretch', hide_index=True, height=260)
 
     st.markdown("---")
     st.markdown("#### ➕ Add / Update Mapping")
@@ -866,7 +866,7 @@ def tab_manual_mapping(df: pd.DataFrame) -> None:
             "awb": "AWB", "so_number": "SO #",
             "invoice_number": "Invoice #", "customer_po_ref": "PO Ref",
         })
-        st.dataframe(show_df, use_container_width=True, hide_index=True, height=220)
+        st.dataframe(show_df, width='stretch', hide_index=True, height=220)
 
         del_awb = st.selectbox(
             "Delete mapping",
@@ -925,7 +925,7 @@ def main() -> None:
         st.markdown("## 🏗️ OCT")
         st.caption(f"Refreshed {now_str}")
 
-        if st.button("🔄 Refresh", use_container_width=True, key="sidebar_refresh"):
+        if st.button("🔄 Refresh", width='stretch', key="sidebar_refresh"):
             load_data(force=True)
             st.rerun()
 
