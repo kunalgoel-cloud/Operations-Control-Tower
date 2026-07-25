@@ -358,33 +358,40 @@ def tab_dashboard(filtered: pd.DataFrame, kpi_vals: dict) -> None:
     _edd7_fn      = getattr(kpis, "cohort_edd_next_7", None)
     _eddtoday_fn  = getattr(kpis, "cohort_edd_today", None)
     _eddtom_fn    = getattr(kpis, "cohort_edd_tomorrow", None)
+    _appttoday_fn = getattr(kpis, "cohort_appt_today", None)
+    _appttom_fn   = getattr(kpis, "cohort_appt_tomorrow", None)
 
     kpi_defs = [
-        ("all",     "All",              None,                        kpi_vals.get("total_active",    0)),
-        ("stuck",   "🚨 Stuck 14d+",    kpis.cohort_stuck,           kpi_vals.get("stuck",           0)),
-        ("appt",    "📋 Pending Appt",  kpis.cohort_pending_appt,    kpi_vals.get("pending_appt",    0)),
-        ("deltoday","✅ Del'd Today",   kpis.cohort_delivered_today, kpi_vals.get("delivered_today", 0)),
-        ("edd",     "⏰ EDD Breached",  kpis.cohort_edd_breached,    kpi_vals.get("edd_breached",    0)),
-        ("eddtoday","📍 EDD Today",     _eddtoday_fn,                kpi_vals.get("edd_today",       0)),
-        ("eddtom",  "➡️ EDD Tomorrow",  _eddtom_fn,                  kpi_vals.get("edd_tomorrow",    0)),
-        ("del7",    "📦 Del'd Last 7d", _del7_fn,                    kpi_vals.get("del_last_7",      0)),
-        ("edd7",    "📅 EDD Next 7d",   _edd7_fn,                    kpi_vals.get("edd_next_7",      0)),
+        ("all",      "All",                 None,                        kpi_vals.get("total_active",    0)),
+        ("stuck",    "🚨 Stuck 14d+",       kpis.cohort_stuck,           kpi_vals.get("stuck",           0)),
+        ("appt",     "📋 Pending Appt",     kpis.cohort_pending_appt,    kpi_vals.get("pending_appt",    0)),
+        ("appttoday","🗓️ Appt Today",       _appttoday_fn,               kpi_vals.get("appt_today",      0)),
+        ("appttom",  "🗓️ Appt Tomorrow",    _appttom_fn,                 kpi_vals.get("appt_tomorrow",   0)),
+        ("deltoday", "✅ Del'd Today",      kpis.cohort_delivered_today, kpi_vals.get("delivered_today", 0)),
+        ("edd",      "⏰ EDD Breached",     kpis.cohort_edd_breached,    kpi_vals.get("edd_breached",    0)),
+        ("eddtoday", "📍 EDD Today",        _eddtoday_fn,                kpi_vals.get("edd_today",       0)),
+        ("eddtom",   "➡️ EDD Tomorrow",     _eddtom_fn,                  kpi_vals.get("edd_tomorrow",    0)),
+        ("del7",     "📦 Del'd Last 7d",    _del7_fn,                    kpi_vals.get("del_last_7",      0)),
+        ("edd7",     "📅 EDD Next 7d",      _edd7_fn,                    kpi_vals.get("edd_next_7",      0)),
     ]
 
     active_key = st.session_state.get("active_kpi", "all")
 
-    # ── Render pill row ───────────────────────────────────────────────────
-    pill_cols = st.columns(len(kpi_defs))
-    for col, (key, label, _, count) in zip(pill_cols, kpi_defs):
-        with col:
-            if st.button(
-                f"{label}  ·  {count}",
-                key=f"kpi_{key}",
-                width='stretch',
-                type="primary" if active_key == key else "secondary",
-            ):
-                st.session_state["active_kpi"] = key
-                st.rerun()
+    # ── Render pill row(s) ──────────────────────────────────────────────────
+    PILLS_PER_ROW = 6
+    for row_start in range(0, len(kpi_defs), PILLS_PER_ROW):
+        row_defs  = kpi_defs[row_start:row_start + PILLS_PER_ROW]
+        pill_cols = st.columns(PILLS_PER_ROW)
+        for col, (key, label, _, count) in zip(pill_cols, row_defs):
+            with col:
+                if st.button(
+                    f"{label}  ·  {count}",
+                    key=f"kpi_{key}",
+                    width='stretch',
+                    type="primary" if active_key == key else "secondary",
+                ):
+                    st.session_state["active_kpi"] = key
+                    st.rerun()
 
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
@@ -417,15 +424,17 @@ def tab_dashboard(filtered: pd.DataFrame, kpi_vals: dict) -> None:
 
     # ── Apply KPI cohort filter ───────────────────────────────────────────
     fn_map = {
-        "all":      None,
-        "stuck":    kpis.cohort_stuck,
-        "appt":     kpis.cohort_pending_appt,
-        "deltoday": kpis.cohort_delivered_today,
-        "edd":      kpis.cohort_edd_breached,
-        "eddtoday": _eddtoday_fn,
-        "eddtom":   _eddtom_fn,
-        "del7":     _del7_fn,
-        "edd7":     _edd7_fn,
+        "all":       None,
+        "stuck":     kpis.cohort_stuck,
+        "appt":      kpis.cohort_pending_appt,
+        "appttoday": _appttoday_fn,
+        "appttom":   _appttom_fn,
+        "deltoday":  kpis.cohort_delivered_today,
+        "edd":       kpis.cohort_edd_breached,
+        "eddtoday":  _eddtoday_fn,
+        "eddtom":    _eddtom_fn,
+        "del7":      _del7_fn,
+        "edd7":      _edd7_fn,
     }
     fn = fn_map.get(active_key)
     table_df = fn(filtered) if (fn is not None and not filtered.empty) else filtered
