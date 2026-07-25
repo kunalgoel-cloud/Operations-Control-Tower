@@ -238,6 +238,8 @@ def compute_kpis(df: pd.DataFrame) -> dict[str, int]:
             "pending_appt": 0,
             "delivered_today": 0,
             "edd_breached": 0,
+            "edd_today": 0,
+            "edd_tomorrow": 0,
         }
 
     active        = df[~df["is_delivered"]]
@@ -268,6 +270,11 @@ def compute_kpis(df: pd.DataFrame) -> dict[str, int]:
     )
     edd_next_7 = int(((edd_dates >= today_ts) & (edd_dates <= cutoff_future)).sum())
 
+    # ── EDD today / EDD tomorrow (active shipments only) ──────────────────
+    tomorrow_ts  = today_ts + pd.Timedelta(days=1)
+    edd_today    = int((edd_dates == today_ts).sum())
+    edd_tomorrow = int((edd_dates == tomorrow_ts).sum())
+
     return {
         "total_active":    int(len(active)),
         "stuck":           int((active["days_old"] > 14).sum()),
@@ -278,6 +285,8 @@ def compute_kpis(df: pd.DataFrame) -> dict[str, int]:
         "delivered_count": int(len(delivered_df)),
         "del_last_7":      del_last_7,
         "edd_next_7":      edd_next_7,
+        "edd_today":       edd_today,
+        "edd_tomorrow":    edd_tomorrow,
         "avg_otd":         avg_otd,
         "otd_count":       otd_count,
     }
@@ -333,6 +342,28 @@ def cohort_edd_next_7(df: pd.DataFrame) -> pd.DataFrame:
     active        = df[~df["is_delivered"]].copy()
     dates         = pd.to_datetime(active["estimated_delivery_date"], errors="coerce")
     mask          = (dates >= today_ts) & (dates <= cutoff_future)
+    return active.loc[mask[mask].index]
+
+
+def cohort_edd_today(df: pd.DataFrame) -> pd.DataFrame:
+    """Active shipments whose EDD is today (system date)."""
+    if df.empty:
+        return df
+    today_ts = pd.Timestamp(date.today())
+    active   = df[~df["is_delivered"]].copy()
+    dates    = pd.to_datetime(active["estimated_delivery_date"], errors="coerce")
+    mask     = dates == today_ts
+    return active.loc[mask[mask].index]
+
+
+def cohort_edd_tomorrow(df: pd.DataFrame) -> pd.DataFrame:
+    """Active shipments whose EDD is tomorrow (system date + 1)."""
+    if df.empty:
+        return df
+    tomorrow_ts = pd.Timestamp(date.today()) + pd.Timedelta(days=1)
+    active      = df[~df["is_delivered"]].copy()
+    dates       = pd.to_datetime(active["estimated_delivery_date"], errors="coerce")
+    mask        = dates == tomorrow_ts
     return active.loc[mask[mask].index]
 
 
