@@ -947,7 +947,7 @@ def main() -> None:
         )
         date_from = date_to = None
         if time_sel == "Custom Range":
-            today = date.today()
+            today = kpis.today_ist()
             date_from = st.date_input("From", value=today.replace(day=1), key="custom_from")
             date_to   = st.date_input("To",   value=today,                key="custom_to")
 
