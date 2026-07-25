@@ -6,10 +6,22 @@ Mirrors GAS v28 _buildDispRow / _kpisFromDispRows / _varianceByState logic.
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 import pandas as pd
+
+
+# ── Timezone helper ──────────────────────────────────────────────────────
+# The app/business runs on IST. The host server (e.g. Streamlit Cloud) may
+# run on UTC, whose calendar date lags IST by a day during early IST hours.
+# All "today" comparisons must anchor to IST, not the server's system clock.
+_IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def today_ist() -> date:
+    """Current date in IST, regardless of the server's system timezone."""
+    return datetime.now(_IST).date()
 
 
 # ── TTD helper ─────────────────────────────────────────────────────────────
@@ -140,7 +152,7 @@ def build_display_rows(df: pd.DataFrame, appt_config: dict[str, bool]) -> pd.Dat
     if df.empty:
         return df
 
-    today = pd.Timestamp(date.today())
+    today = pd.Timestamp(today_ist())
 
     def _is_null(val) -> bool:
         """Safely check for null / NaT / NaN across Python, numpy, and Arrow types."""
@@ -206,7 +218,7 @@ def build_display_rows(df: pd.DataFrame, appt_config: dict[str, bool]) -> pd.Dat
         if ts is None:
             return False
         try:
-            return ts.date() == date.today()
+            return ts.date() == today_ist()
         except Exception:
             return False
 
@@ -255,7 +267,7 @@ def compute_kpis(df: pd.DataFrame) -> dict[str, int]:
     otd_count = int(len(otd_vals))
 
     # ── Delivered last 7 days ─────────────────────────────────────────────
-    today_ts      = pd.Timestamp(date.today())
+    today_ts      = pd.Timestamp(today_ist())
     cutoff_past   = today_ts - pd.Timedelta(days=7)
     cutoff_future = today_ts + pd.Timedelta(days=7)
 
@@ -325,7 +337,7 @@ def cohort_delivered_last_7(df: pd.DataFrame) -> pd.DataFrame:
     """Shipments delivered in the last 7 days."""
     if df.empty:
         return df
-    today_ts    = pd.Timestamp(date.today())
+    today_ts    = pd.Timestamp(today_ist())
     cutoff_past = today_ts - pd.Timedelta(days=7)
     delivered   = df[df["is_delivered"]].copy()
     dates       = pd.to_datetime(delivered["delivery_date"], errors="coerce")
@@ -337,7 +349,7 @@ def cohort_edd_next_7(df: pd.DataFrame) -> pd.DataFrame:
     """Active shipments whose EDD falls within the next 7 days."""
     if df.empty:
         return df
-    today_ts      = pd.Timestamp(date.today())
+    today_ts      = pd.Timestamp(today_ist())
     cutoff_future = today_ts + pd.Timedelta(days=7)
     active        = df[~df["is_delivered"]].copy()
     dates         = pd.to_datetime(active["estimated_delivery_date"], errors="coerce")
@@ -349,7 +361,7 @@ def cohort_edd_today(df: pd.DataFrame) -> pd.DataFrame:
     """Active shipments whose EDD is today (system date)."""
     if df.empty:
         return df
-    today_ts = pd.Timestamp(date.today())
+    today_ts = pd.Timestamp(today_ist())
     active   = df[~df["is_delivered"]].copy()
     dates    = pd.to_datetime(active["estimated_delivery_date"], errors="coerce")
     mask     = dates == today_ts
@@ -360,7 +372,7 @@ def cohort_edd_tomorrow(df: pd.DataFrame) -> pd.DataFrame:
     """Active shipments whose EDD is tomorrow (system date + 1)."""
     if df.empty:
         return df
-    tomorrow_ts = pd.Timestamp(date.today()) + pd.Timedelta(days=1)
+    tomorrow_ts = pd.Timestamp(today_ist()) + pd.Timedelta(days=1)
     active      = df[~df["is_delivered"]].copy()
     dates       = pd.to_datetime(active["estimated_delivery_date"], errors="coerce")
     mask        = dates == tomorrow_ts
@@ -379,7 +391,7 @@ def variance_by_state(df: pd.DataFrame) -> pd.DataFrame:
             columns=["State", "Total", "Delivered", "On Time", "Late", "Avg Var (d)"]
         )
 
-    today = pd.Timestamp(date.today())
+    today = pd.Timestamp(today_ist())
     rows: list[dict] = []
 
     for state, grp in df.groupby("drop_state", dropna=False):
