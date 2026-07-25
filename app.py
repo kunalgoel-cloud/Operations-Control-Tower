@@ -354,8 +354,10 @@ def tab_dashboard(filtered: pd.DataFrame, kpi_vals: dict) -> None:
     if "active_kpi" not in st.session_state:
         st.session_state["active_kpi"] = "all"
 
-    _del7_fn = getattr(kpis, "cohort_delivered_last_7", None)
-    _edd7_fn = getattr(kpis, "cohort_edd_next_7", None)
+    _del7_fn      = getattr(kpis, "cohort_delivered_last_7", None)
+    _edd7_fn      = getattr(kpis, "cohort_edd_next_7", None)
+    _eddtoday_fn  = getattr(kpis, "cohort_edd_today", None)
+    _eddtom_fn    = getattr(kpis, "cohort_edd_tomorrow", None)
 
     kpi_defs = [
         ("all",     "All",              None,                        kpi_vals.get("total_active",    0)),
@@ -363,6 +365,8 @@ def tab_dashboard(filtered: pd.DataFrame, kpi_vals: dict) -> None:
         ("appt",    "📋 Pending Appt",  kpis.cohort_pending_appt,    kpi_vals.get("pending_appt",    0)),
         ("deltoday","✅ Del'd Today",   kpis.cohort_delivered_today, kpi_vals.get("delivered_today", 0)),
         ("edd",     "⏰ EDD Breached",  kpis.cohort_edd_breached,    kpi_vals.get("edd_breached",    0)),
+        ("eddtoday","📍 EDD Today",     _eddtoday_fn,                kpi_vals.get("edd_today",       0)),
+        ("eddtom",  "➡️ EDD Tomorrow",  _eddtom_fn,                  kpi_vals.get("edd_tomorrow",    0)),
         ("del7",    "📦 Del'd Last 7d", _del7_fn,                    kpi_vals.get("del_last_7",      0)),
         ("edd7",    "📅 EDD Next 7d",   _edd7_fn,                    kpi_vals.get("edd_next_7",      0)),
     ]
@@ -418,6 +422,8 @@ def tab_dashboard(filtered: pd.DataFrame, kpi_vals: dict) -> None:
         "appt":     kpis.cohort_pending_appt,
         "deltoday": kpis.cohort_delivered_today,
         "edd":      kpis.cohort_edd_breached,
+        "eddtoday": _eddtoday_fn,
+        "eddtom":   _eddtom_fn,
         "del7":     _del7_fn,
         "edd7":     _edd7_fn,
     }
