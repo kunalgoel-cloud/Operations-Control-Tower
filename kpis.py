@@ -252,6 +252,8 @@ def compute_kpis(df: pd.DataFrame) -> dict[str, int]:
             "edd_breached": 0,
             "edd_today": 0,
             "edd_tomorrow": 0,
+            "appt_today": 0,
+            "appt_tomorrow": 0,
         }
 
     active        = df[~df["is_delivered"]]
@@ -287,6 +289,13 @@ def compute_kpis(df: pd.DataFrame) -> dict[str, int]:
     edd_today    = int((edd_dates == today_ts).sum())
     edd_tomorrow = int((edd_dates == tomorrow_ts).sum())
 
+    # ── Appointment today / tomorrow (active shipments only) ──────────────
+    appt_dates    = pd.to_datetime(
+        df.loc[~df["is_delivered"], "appointment_date"], errors="coerce"
+    )
+    appt_today    = int((appt_dates == today_ts).sum())
+    appt_tomorrow = int((appt_dates == tomorrow_ts).sum())
+
     return {
         "total_active":    int(len(active)),
         "stuck":           int((active["days_old"] > 14).sum()),
@@ -299,6 +308,8 @@ def compute_kpis(df: pd.DataFrame) -> dict[str, int]:
         "edd_next_7":      edd_next_7,
         "edd_today":       edd_today,
         "edd_tomorrow":    edd_tomorrow,
+        "appt_today":      appt_today,
+        "appt_tomorrow":   appt_tomorrow,
         "avg_otd":         avg_otd,
         "otd_count":       otd_count,
     }
@@ -375,6 +386,28 @@ def cohort_edd_tomorrow(df: pd.DataFrame) -> pd.DataFrame:
     tomorrow_ts = pd.Timestamp(today_ist()) + pd.Timedelta(days=1)
     active      = df[~df["is_delivered"]].copy()
     dates       = pd.to_datetime(active["estimated_delivery_date"], errors="coerce")
+    mask        = dates == tomorrow_ts
+    return active.loc[mask[mask].index]
+
+
+def cohort_appt_today(df: pd.DataFrame) -> pd.DataFrame:
+    """Active shipments whose appointment_date is today (IST)."""
+    if df.empty:
+        return df
+    today_ts = pd.Timestamp(today_ist())
+    active   = df[~df["is_delivered"]].copy()
+    dates    = pd.to_datetime(active["appointment_date"], errors="coerce")
+    mask     = dates == today_ts
+    return active.loc[mask[mask].index]
+
+
+def cohort_appt_tomorrow(df: pd.DataFrame) -> pd.DataFrame:
+    """Active shipments whose appointment_date is tomorrow (IST + 1)."""
+    if df.empty:
+        return df
+    tomorrow_ts = pd.Timestamp(today_ist()) + pd.Timedelta(days=1)
+    active      = df[~df["is_delivered"]].copy()
+    dates       = pd.to_datetime(active["appointment_date"], errors="coerce")
     mask        = dates == tomorrow_ts
     return active.loc[mask[mask].index]
 
